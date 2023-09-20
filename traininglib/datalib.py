@@ -41,6 +41,10 @@ def load_image(
         image   =   image / np.float32(255)
     elif to_tensor:
         image   =   torch.as_tensor( np.array(image) )
+        if image.ndim == 2:
+            image = image[..., None]
+        #to CHW ordering
+        image = torch.moveaxis(image, -1,0)
     else:
         image   =   np.array(image)
     return image
