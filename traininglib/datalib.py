@@ -63,17 +63,49 @@ def ensure_imagetensor(x:str|np.ndarray) -> torch.Tensor:
 def resize_tensor(
     x:    torch.Tensor, 
     size: int|tp.Tuple[int,int], 
-    mode: tp.Literal['nearest', 'bilinear']
+    mode: tp.Literal['nearest', 'bilinear'],
+    align_corners: bool|None = None,
 ) -> torch.Tensor:
     assert torch.is_tensor(x)
     assert len(x.shape) in [3,4]
     x0 = x
     if len(x0.shape) == 3:
         x = x[np.newaxis]
-    y = torch.nn.functional.interpolate(x, size, mode=mode)
+    y = torch.nn.functional.interpolate(x, size, mode=mode, align_corners=align_corners)
     if len(x0.shape) == 3:
         y = y[0]
     return y
+
+def write_image(filepath:str, x:torch.Tensor, makedirs:bool=True) -> None:
+    assert torch.is_tensor(x)
+    assert x.dtype == torch.float32
+    assert x.min() >= 0 and x.max() <= 1
+    assert len(x.shape) == 3 and x.shape[0] == 3
+
+    if makedirs:
+        os.makedirs(os.path.dirname(filepath), exist_ok=True)
+    PIL.Image.fromarray(
+        (x.cpu().detach().numpy().transpose(1,2,0) * 255).astype('uint8')
+    ).save(filepath)
+
+
+Color = tp.Tuple[int,int,int]
+
+def convert_rgb_to_mask(
+    rgbdata:    torch.Tensor,
+    colors:     tp.List[Color], 
+) -> torch.Tensor:
+    '''Convert a RGB image (HWC u8) to a binary mask from the specified colors'''
+    assert rgbdata.dtype == torch.uint8, rgbdata.dtype
+    assert rgbdata.shape[1] == 3, rgbdata.shape
+    #convert BCHW to BHWC
+    rgbdata       = rgbdata.moveaxis(1, -1)
+    #convert to single-channel uint32 for faster processsing
+    rgbadata      = torch.cat([rgbdata, 255*torch.ones_like(rgbdata[...,:1])], dim=-1)
+    data_uint32   = rgbadata.view(torch.int32)[...,0]
+    colors_uint32 = torch.as_tensor([c+(255,) for c in colors], dtype=torch.uint8).view(torch.int32)
+    mask          = torch.isin(data_uint32, colors_uint32).float()
+    return torch.as_tensor(mask)[:,None]
 
 
 def load_file_pairs(filepath:str, delimiter:str=',') -> tp.List[tp.Tuple[str,str]]:

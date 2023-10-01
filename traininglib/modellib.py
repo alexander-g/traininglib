@@ -110,5 +110,13 @@ def load_model(filename:str) -> BaseModel:
     '''Load a self-contained torch.package from file as saved with .save() above'''
     return torch.package.PackageImporter(filename).load_pickle('model', 'model.pkl')
 
-
+def load_weights(filepath:str, model:torch.nn.Module) -> None:
+    if filepath.endswith('.pt.zip'):
+        sd = load_model(filepath).state_dict()
+    elif filepath.endswith('.pth'):
+        sd = torch.load(filepath)
+    else:
+        raise NotImplementedError(f"Don't know how to load weights from {filepath}")
+    
+    return model.load_state_dict(sd)
 
