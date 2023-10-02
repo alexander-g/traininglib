@@ -108,6 +108,7 @@ class BaseModel(torch.nn.Module):
 
 def load_model(filename:str) -> BaseModel:
     '''Load a self-contained torch.package from file as saved with .save() above'''
+    assert os.path.exists(filename), filename
     return torch.package.PackageImporter(filename).load_pickle('model', 'model.pkl')
 
 def load_weights(filepath:str, model:torch.nn.Module) -> None:

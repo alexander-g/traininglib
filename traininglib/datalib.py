@@ -1,5 +1,6 @@
 import typing as tp
 import os
+import glob
 import numpy as np
 import torch, torchvision
 import PIL.Image
@@ -124,6 +125,15 @@ def load_file_pairs(filepath:str, delimiter:str=',') -> tp.List[tp.Tuple[str,str
             raise Exception(f'Files not found: {pair}')
         pairs.append((pair[0], pair[1]))
     return pairs
+
+def collect_inputfiles(splitfile_or_glob:str, *a, **kw) -> tp.List[str]:
+    '''Return a list of input images, either from a csv split file or by expanding a glob'''
+    if splitfile_or_glob.endswith('.csv'):
+        pairs  = load_file_pairs(splitfile_or_glob)
+        inputs = [i for i,a in pairs]
+        return inputs
+    else:
+        return glob.glob(splitfile_or_glob)
 
 
 #Helper functions for slicing images (for CHW dimension ordering)
