@@ -104,9 +104,11 @@ def convert_rgb_to_mask(
     #convert to single-channel uint32 for faster processsing
     rgbadata      = torch.cat([rgbdata, 255*torch.ones_like(rgbdata[...,:1])], dim=-1)
     data_uint32   = rgbadata.view(torch.int32)[...,0]
-    colors_uint32 = torch.as_tensor([c+(255,) for c in colors], dtype=torch.uint8).view(torch.int32)
+    colors_uint32 = torch.as_tensor(
+        [c+(255,) for c in colors], dtype=torch.uint8
+    ).view(torch.int32).to(data_uint32.device)
     mask          = torch.isin(data_uint32, colors_uint32).float()
-    return torch.as_tensor(mask)[:,None]
+    return mask[:,None]
 
 
 def load_file_pairs(filepath:str, delimiter:str=',') -> tp.List[tp.Tuple[str,str]]:
