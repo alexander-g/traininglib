@@ -3,6 +3,9 @@ import numpy as np
 import torch, torchvision
 
 
+Loss    = torch.Tensor
+Metrics = tp.Dict[str, float]
+
 class TrainingTask(torch.nn.Module):
     """Base class for training"""
 
@@ -27,11 +30,11 @@ class TrainingTask(torch.nn.Module):
         self.amp = amp if torch.cuda.is_available() else False
 
 
-    def training_step(self, batch) -> tp.Tuple[torch.Tensor, tp.Dict]:
+    def training_step(self, batch) -> tp.Tuple[Loss, Metrics]:
         """Abstract training step function. Should return a loss scalar and a dictionary with metrics"""
         raise NotImplementedError()
 
-    def validation_step(self, batch) -> tp.Dict:
+    def validation_step(self, batch) -> Metrics:
         """Abstract validation step function. Should return a dictionary with metrics"""
         raise NotImplementedError()
 
