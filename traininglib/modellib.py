@@ -7,12 +7,11 @@ from . import datalib, util
 
 
 class BaseModel(torch.nn.Module):
-    def __init__(self, module:torch.nn.Module, inputsize:int, classnames:tp.List[str]):
+    def __init__(self, module:torch.nn.Module, inputsize:int):
         super().__init__()
 
         self.module     = module
         self.inputsize  = inputsize
-        self.classnames = classnames
     
     def forward(self, x:torch.Tensor, *a, **kw) -> torch.Tensor:
         x0 = x
@@ -102,8 +101,23 @@ class BaseModel(torch.nn.Module):
             # pe.save_text('model', 'class_list.txt', '\n'.join(self.class_list))
         return destination
     
-    def start_training(self):
-        raise NotImplementedError()
+    def start_training(
+        self,
+        trainsplit:   tp.List[tp.Any],
+        DatasetClass: tp.Type,
+        TrainingTask: tp.Type,
+        ds_kw:        tp.Dict[str, tp.Any]        = {},
+        ld_kw:        tp.Dict[str, tp.Any]        = {},
+        task_kw:      tp.Dict[str, tp.Any]        = {},
+        fit_kw:       tp.Dict[str, tp.Any]        = {},
+    ):
+        assert len(trainsplit) > 0
+        ds    = DatasetClass(trainsplit, **ds_kw)
+        ld_kw = {'batch_size':4} | ld_kw
+        ld    = datalib.create_dataloader(ds, shuffle=True, **ld_kw)
+        print(f"Training on {len(ds)} images / {len(ld)} batches.")
+        task  = TrainingTask(self, **task_kw)
+        return task.fit(ld, **fit_kw)
 
 
 def load_model(filename:str) -> BaseModel:

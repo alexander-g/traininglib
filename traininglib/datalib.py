@@ -50,7 +50,7 @@ def load_image(
         image   =   np.array(image)
     return image
 
-def ensure_imagetensor(x:str|np.ndarray) -> torch.Tensor:
+def ensure_imagetensor(x:str|np.ndarray|torch.Tensor) -> torch.Tensor:
     '''Convert input to a CHW image tensor (if needed).'''
     t:torch.Tensor
     if isinstance(x, str):
@@ -58,7 +58,9 @@ def ensure_imagetensor(x:str|np.ndarray) -> torch.Tensor:
         #make mypy happy
         t  = tp.cast(torch.Tensor, _t)
     elif not torch.is_tensor(x):
-        t = torchvision.transforms.ToTensor()(x)
+        t = torchvision.transforms.ToTensor()(x).float()
+    else:
+        t = x
     return t
 
 def resize_tensor(
