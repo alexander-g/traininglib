@@ -60,7 +60,7 @@ def ensure_imagetensor(x:str|np.ndarray|torch.Tensor) -> torch.Tensor:
     elif not torch.is_tensor(x):
         t = torchvision.transforms.ToTensor()(x).float()
     else:
-        t = x
+        t = tp.cast(torch.Tensor, x)
     return t
 
 def resize_tensor(
@@ -78,6 +78,47 @@ def resize_tensor(
     if len(x0.shape) == 3:
         y = y[0]
     return y
+
+
+interpolation_modes = {
+    'nearest':  torchvision.transforms.InterpolationMode.NEAREST,
+    'bilinear': torchvision.transforms.InterpolationMode.BILINEAR,
+}
+
+#TODO: get torchvision.transforms.v2 to work
+def random_crop(
+    *x:         torch.Tensor,
+    patchsize:  int, 
+    modes:      tp.List[tp.Literal['nearest', 'bilinear']],
+    cropfactors:tp.Tuple[float, float] = (0.75, 1.33),
+) -> tp.List[torch.Tensor]:
+    '''Perform random crops on multiple (BCHW) tensors'''
+    H,W = x[0].shape[-2:]
+    lo  = patchsize * cropfactors[0]
+    hi  = patchsize * cropfactors[1]
+    h   = int(lo + torch.rand(1) * (hi-lo))
+    w   = int(lo + torch.rand(1) * (hi-lo))
+    y0  = int(torch.rand(1) * (H - h))
+    x0  = int(torch.rand(1) * (W - w))
+
+    output = list(x)
+    for i in range(len(output)):
+        output[i] = torchvision.transforms.functional.resized_crop(
+            output[i], y0, x0, h, w, [patchsize]*2, interpolation_modes[modes[i]]
+        )
+    return output
+
+
+def random_rotate_flip(*x:torch.Tensor) -> tp.List[torch.Tensor]:
+    '''Perform random rotation and flip operations on multiple (BCHW) tensors'''
+    output = list(x)
+    k = np.random.randint(4)
+    for i in range(len(output)):
+        output[i] = torch.rot90(output[i], k, dims=(-2,-1))
+    if np.random.random() < 0.5:
+        for i in range(len(output)):
+            output[i] = torch.flip(output[i], dims=(-1,))
+    return output
 
 def write_image(filepath:str, x:torch.Tensor, makedirs:bool=True) -> None:
     assert torch.is_tensor(x)
@@ -137,7 +178,7 @@ def collect_inputfiles(splitfile_or_glob:str, *a, **kw) -> tp.List[str]:
         inputs = [i for i,a in pairs]
         return inputs
     else:
-        return glob.glob(splitfile_or_glob)
+        return sorted(glob.glob(splitfile_or_glob))
 
 
 #Helper functions for slicing images (for CHW dimension ordering)

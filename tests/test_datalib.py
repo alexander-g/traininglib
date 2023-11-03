@@ -1,6 +1,7 @@
 from traininglib import datalib
 import tempfile, os
 import numpy as np
+import torch
 
 import pytest
 
@@ -55,3 +56,28 @@ def test_slice_stitch_images():
     assert x.shape == y.shape
     assert np.all( x == y.numpy() )
 
+
+def test_rotate_flip():
+    x,t = torch.zeros([1,3,100,100]), torch.zeros([1,3,100,100])
+    x[0,2,30,30] = 1
+    t[0,2,30,30] = 1
+    
+    x1,t1 = datalib.random_rotate_flip(x, t)
+
+    assert torch.all( x1 == t1 )
+    assert x[:,:2].sum() == 0
+    assert (x[0,2,30,30]==1 + x[0,2,30,70]==1 + x[0,2,70,70]==1 + x[0,2,70,30]==1) == 1
+
+def test_random_crop():
+    x,t = torch.zeros([1,3,100,100]), torch.zeros([1,3,100,100])
+    t[::2,::2] = 7.77
+
+    x1,t1 = datalib.random_crop(x, t, patchsize=77, modes=['bilinear', 'nearest'])
+
+    assert x1.shape == t1.shape == (1,3,77,77)
+
+    #nearest interpolation
+    t1_uniques = np.unique(t1)
+    assert t1_uniques.shape == (2,)
+    assert 0 in t1_uniques
+    assert 7.77 in t1_uniques
