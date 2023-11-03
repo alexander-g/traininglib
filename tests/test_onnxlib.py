@@ -2,14 +2,30 @@ from traininglib import onnxlib
 import onnxruntime as ort
 import torch
 import numpy as np
+import pytest
 
 
-
-def test_export():
-    m = torch.nn.Sequential(
-        torch.nn.Conv2d(3,5, kernel_size=3),
-        torch.nn.Conv2d(5,1, kernel_size=1),
+testdata = [
+    (
+        torch.nn.Sequential(
+            torch.nn.Conv2d(3,5, kernel_size=3),
+            torch.nn.Conv2d(5,1, kernel_size=1),
+        ) , '2x 2dconv'
+    ),
+    (
+        torch.nn.Sequential(
+            torch.nn.Conv2d(3,5, kernel_size=3),
+            torch.nn.BatchNorm2d(5),
+            torch.nn.Conv2d(5,1, kernel_size=1),
+        ), '2dconv & batchnorm'
     )
+]
+
+
+@pytest.mark.parametrize("m,desc", testdata)
+def test_export(m, desc):
+    print(f'==========TEST START: {desc}==========')
+
     x = torch.randn([2,3,10,10])
     loss_func = lambda y,t: ( (y-1)**2 ).mean()
 
