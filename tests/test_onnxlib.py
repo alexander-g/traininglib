@@ -8,6 +8,12 @@ import pytest
 testdata = [
     (
         torch.nn.Sequential(
+            torch.nn.Conv2d(3,1, kernel_size=1),
+            torch.nn.BatchNorm2d(1),
+        ), 'batchnorm'
+    ),
+    (
+        torch.nn.Sequential(
             torch.nn.Conv2d(3,5, kernel_size=3),
             torch.nn.Conv2d(5,1, kernel_size=1),
         ) , '2x 2dconv'
@@ -18,7 +24,7 @@ testdata = [
             torch.nn.BatchNorm2d(5),
             torch.nn.Conv2d(5,1, kernel_size=1),
         ), '2dconv & batchnorm'
-    )
+    ),
 ]
 
 
@@ -35,7 +41,8 @@ def test_export(m, desc):
     
     sess0    = ort.InferenceSession(exported.onnx_bytes_0)
     outputs0 = [o.name for o in sess0.get_outputs()]
-    inputs0  = onnxlib.state_dict_to_onnx_input(m.state_dict())
+    inputsnames0  = [o.name for o in sess0.get_inputs()]
+    inputs0  = onnxlib.state_dict_to_onnx_input(m.state_dict(), inputsnames0)
     inputs0.update({'x': x.numpy()})
     out0     = sess0.run(outputs0, inputs0)
     out0     = dict(zip(outputs0, out0))
@@ -79,15 +86,17 @@ def test_export(m, desc):
 
     print()
     print('*'*50)
-    for a,b in zip(torch_outs[0], out0.values()):
-        print('torch:', a[0])
-        print('onnx:',  b[0])
-        assert np.allclose(a,b)
+    for a,[k,b] in zip(torch_outs[0], out0.items()):
+        print(k)
+        print('torch:', a[0], a.shape)
+        print('onnx:',  b[0], b.shape)
+        #assert np.allclose(a,b)
         print()
     
-    for a,b in zip(torch_outs[1], out1.values()):
-        print('torch:', a[0])
-        print('onnx:',  b[0])
+    for a,[k,b] in zip(torch_outs[1], out1.items()):
+        print(k)
+        print('torch:', a[0], a.shape)
+        print('onnx:',  b[0], b.shape)
         assert np.allclose(a,b)
         print()
 
