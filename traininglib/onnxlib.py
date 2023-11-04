@@ -35,7 +35,7 @@ def export_model_as_functional_training_onnx(
         sd_nongrads: tp.Tuple[torch.nn.Parameter],
         x:           torch.Tensor, 
         t:           torch.Tensor,
-    ) -> torch.Tensor:
+    ) -> tp.Tuple[torch.Tensor, torch.Tensor]:
         # torch.jit.trace() complains if a dict is passed to this function
         # but torch.func.functional_call() wants a dict
         sd     = dict(zip(sd_keys, sd_grads + sd_nongrads))
@@ -72,6 +72,7 @@ def export_model_as_functional_training_onnx(
     replace_all_aten_sgn(train_step_tx_0)
     replace_all_aten_native_batch_norm(train_step_tx_0)
     replace_all_aten_native_batch_norm_backward(train_step_tx_0)
+    replace_all_aten_threshold_backward(train_step_tx_0)
 
     _params, _mom, _loss, _y, _grads, _nongrads = train_step_tx_0(sd_grad_vals, sd_nongrad_vals, x)
     train_step_tx   = make_fx(train_step)(sd_grad_vals, sd_nongrad_vals, x, _mom)
@@ -79,6 +80,7 @@ def export_model_as_functional_training_onnx(
     replace_all_aten_sgn(train_step_tx)
     replace_all_aten_native_batch_norm(train_step_tx)
     replace_all_aten_native_batch_norm_backward(train_step_tx)
+    replace_all_aten_threshold_backward(train_step_tx)
 
     inputnames_0  =  [f'p_{k}' for i,k in enumerate(sd_keys)] + ['x']
     inputnames    = ([f'p_{k}' for i,k in enumerate(sd_keys)]
@@ -272,79 +274,11 @@ def replace_all_aten_native_batch_norm_backward(gm:torch.fx.graph_module.GraphMo
     gm.recompile()
 
 
-def replace_node_with_manual_batch_norm_backward(
-    graph:torch.fx.graph.Graph, node:torch.fx.graph.Node
-):
-    #https://kratzert.github.io/2016/02/12/understanding-the-gradient-flow-through-the-batch-normalization-layer.html
-    #https://github.com/pytorch/pytorch/blob/a44f8894fa6d973693aab44a3dda079a168b05c1/torch/_decomp/decompositions.py#L1727
-    with graph.inserting_before(node):
-        input: torch.fx.node.Node
-        grad_out_, input, weight  = node.args[:3]  # type: ignore
-        running_mean, running_var = node.args[3:5] #not used here
-        save_mean, save_invstd    = node.args[5:7]
-        train, eps, grad_in_mask  = node.args[7:]
-        assert grad_in_mask == [True,True,True]
-        assert train == True
-
-        input_shape = tuple(input.meta['tensor_meta'].shape)
-        N,C,H,W = input_shape
-        
-        d_bias = graph.call_function(
-            torch.ops.aten.sum, (grad_out_,), kwargs={'dim':[0,2,3]} 
-        )
-
-        save_mean_reshaped   = graph.call_function(torch.reshape, (save_mean, (1,C,1,1)) )
-        save_invstd_reshaped = graph.call_function(torch.reshape, (save_invstd, (1,C,1,1)) )
-        #TODO: arent xmu and xhat cached from forward pass?
-        xmu  = graph.call_function(torch.ops.aten.sub, (input, save_mean_reshaped))
-        xhat = graph.call_function(
-            torch.ops.aten.mul, (xmu, save_invstd_reshaped)
-        )
-        grad_mul_xhat = graph.call_function(torch.ops.aten.mul, (grad_out_, xhat))
-        sumkwargs = {'dim':[0,2,3]}
-        d_weight = graph.call_function(
-            torch.ops.aten.sum, (grad_mul_xhat,), kwargs=sumkwargs 
-        )
-
-        weight_reshaped = graph.call_function(torch.reshape, (weight, (1,C,1,1)))
-        dx_hat          = graph.call_function(torch.ops.aten.mul, (grad_out_, weight_reshaped))
-        dx_hat_mul_xmu  = graph.call_function(torch.ops.aten.mul, (dx_hat, xmu))
-        keepdims = {'keepdim':True}
-        divar  = graph.call_function(
-            torch.ops.aten.sum, (dx_hat_mul_xmu,), kwargs=sumkwargs|keepdims
-        )
-        
-        sqrtvar  = graph.call_function(torch.ops.aten.div, (1.0, save_invstd_reshaped))
-        var      = graph.call_function(torch.ops.aten.pow, (sqrtvar, 2))
-        ninvvar  = graph.call_function(torch.ops.aten.div, (-1.0, var))
-        dsqrtvar = graph.call_function(torch.ops.aten.mul, (ninvvar, divar))
-        _dvar    = graph.call_function(
-            torch.ops.aten.mul, (save_invstd_reshaped, dsqrtvar)
-        )
-        dvar       = graph.call_function(torch.ops.aten.mul, (0.5, _dvar))
-        n_elements = N * H * W
-        n_ones     = graph.call_function(torch.ones, (N,C,H,W))
-        n_means    = graph.call_function(torch.ops.aten.mul, (1.0/n_elements, n_ones))
-        dsq        = graph.call_function(torch.ops.aten.mul, (n_means, dvar))
-        xmu2       = graph.call_function(torch.ops.aten.mul, (2.0, xmu))
-        dxmu2      = graph.call_function(torch.ops.aten.mul, (xmu2, dsq))
-
-        dxmu1  = graph.call_function(torch.ops.aten.mul, (dx_hat, save_invstd_reshaped))
-        dx1    = graph.call_function(torch.ops.aten.add, (dxmu1, dxmu2))
-        _dmu   = graph.call_function(torch.ops.aten.sum, (dx1,), kwargs=sumkwargs|keepdims)
-        dmu    = graph.call_function(torch.ops.aten.mul, (-1.0, _dmu))
-        dx2    = graph.call_function(torch.ops.aten.mul, (n_means, dmu))
-        dx     = graph.call_function(torch.ops.aten.add, (dx1, dx2))
-
-        tuple_op = graph.call_function(tuple, args=([dx, d_weight, d_bias],))
-        node.replace_all_uses_with(tuple_op)
-    graph.erase_node(node)
-
-
 def find_node_in_graph(graph:torch.fx.graph.Graph, name:str) -> torch.fx.graph.Node|None:
     for node in graph.nodes:
         if node.name == name:
             return node
+    return None
 
 
 def replace_node_with_manual_batch_norm_backward(
@@ -353,7 +287,7 @@ def replace_node_with_manual_batch_norm_backward(
     #https://github.com/pytorch/pytorch/blob/a44f8894fa6d973693aab44a3dda079a168b05c1/torch/_decomp/decompositions.py#L1727
     empty_args = []
     for arg in node.args[:7]:
-        meta = arg.meta['tensor_meta']
+        meta = arg.meta['tensor_meta']  # type: ignore
         empty_args.append(
             torch.empty(meta.shape, dtype=meta.dtype)
         )
@@ -361,9 +295,9 @@ def replace_node_with_manual_batch_norm_backward(
     fx = make_fx(torch._decomp.decompositions.native_batch_norm_backward)(*new_args)
     
     node_map = { fxnode:gnode for fxnode,gnode in zip(fx.graph.nodes, node.args)}
-    node_map[find_node_in_graph(fx.graph, 'output_mask_1')] = node.args[-1][0]
-    node_map[find_node_in_graph(fx.graph, 'output_mask_2')] = node.args[-1][1]
-    node_map[find_node_in_graph(fx.graph, 'output_mask_3')] = node.args[-1][2]
+    node_map[find_node_in_graph(fx.graph, 'output_mask_1')] = node.args[-1][0] # type: ignore
+    node_map[find_node_in_graph(fx.graph, 'output_mask_2')] = node.args[-1][1] # type: ignore
+    node_map[find_node_in_graph(fx.graph, 'output_mask_3')] = node.args[-1][2] # type: ignore
     with graph.inserting_before(node):
         out = graph.graph_copy(fx.graph, node_map, return_output_node=True)
         fx_outputs  = list(fx.graph.nodes)[-1].args[0]
@@ -394,7 +328,7 @@ def replace_node_with_aten_native_batch_norm(
     #https://github.com/pytorch/pytorch/blob/a44f8894fa6d973693aab44a3dda079a168b05c1/torch/_decomp/decompositions.py#L1402
     empty_args = []
     for arg in node.args[:5]:
-        meta = arg.meta['tensor_meta']
+        meta = arg.meta['tensor_meta'] # type: ignore
         empty_args.append(
             torch.empty(meta.shape, dtype=meta.dtype)
         )
@@ -448,11 +382,31 @@ def replace_all_squeeze_dims(gm:torch.fx.graph_module.GraphModule):
     graph.lint()
     gm.recompile()
 
+def replace_all_aten_threshold_backward(gm:torch.fx.graph_module.GraphModule):
+    for node in gm.graph.nodes:
+        if node.target == torch.ops.aten.threshold_backward.default:
+            grad_output, _self, threshold = node.args
+            new_args = []
+            for argnode in node.args[:2]:
+                meta = argnode.meta['tensor_meta']
+                new_args += [torch.empty(meta.shape, dtype=meta.dtype)]
+            new_args += node.args[2:]
+            fx = make_fx(torch._decomp.decompositions.threshold_backward)(*new_args)
+            
+            node_map = { fxnode:gnode for fxnode,gnode in zip(fx.graph.nodes, node.args)}
+            with gm.graph.inserting_before(node):
+                newout = gm.graph.graph_copy(fx.graph, node_map, return_output_node=True)
+                node.replace_all_uses_with(newout[0])
+            gm.graph.erase_node(node)
+    gm.graph.lint()
+    gm.recompile()
+                
+
 
 def _early_exit(gm:torch.fx.graph_module.GraphModule, nodename:str):
     '''Create a return statement after a node with specified name and return the node
        (For debugging)'''
-    n_leaves = gm._out_spec.num_leaves
+    n_leaves = gm._out_spec.num_leaves  # type: ignore
     graph:torch.fx.graph.Graph = gm.graph
     for i,node in enumerate(gm.graph.nodes):
         if node.name == nodename:

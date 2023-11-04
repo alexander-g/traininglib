@@ -16,7 +16,7 @@ testdata = [
         torch.nn.Sequential(
             torch.nn.Conv2d(3,5, kernel_size=3),
             torch.nn.BatchNorm2d(5),
-            #torch.nn.ReLU(),
+            torch.nn.ReLU(),
             torch.nn.Conv2d(5,1, kernel_size=1),
         ), '2dconv & batchnorm'
     ),
