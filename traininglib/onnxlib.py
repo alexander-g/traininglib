@@ -41,10 +41,10 @@ def export_model_as_functional_training_onnx(
         sd     = dict(zip(sd_keys, sd_grads + sd_nongrads))
         y      = torch.func.functional_call(m, sd, x, strict=True)
         loss   = loss_func(y, t)
-        return loss
+        return loss, y
 
     #gradient computation function
-    grad_f = torch.func.grad_and_value(forward_step_f, argnums=0)
+    grad_f = torch.func.grad_and_value(forward_step_f, argnums=0, has_aux=True)
 
     def train_step_0(
         sd_grads:    tp.Tuple[torch.nn.Parameter],
@@ -52,8 +52,8 @@ def export_model_as_functional_training_onnx(
         x:           torch.Tensor
     ):
         _t = 0 #TODO
-        grads, loss = grad_f(sd_grads, sd_nongrads, x, _t)
-        return run_optimizer_init(grads, list(sd_grads)) + (loss, grads, sd_nongrads)
+        grads, (loss, y) = grad_f(sd_grads, sd_nongrads, x, _t)
+        return run_optimizer_init(grads, list(sd_grads)) + (loss, y, grads, sd_nongrads)
 
     def train_step(
         sd_grads:    tp.Tuple[torch.nn.Parameter],
@@ -62,24 +62,23 @@ def export_model_as_functional_training_onnx(
         mom:         tp.List[torch.Optional[torch.Tensor]],
     ):
         _t = 0 #TODO
-        grads, loss = grad_f(sd_grads, sd_nongrads, x, _t)
-        return run_optimizer(grads, list(sd_grads), mom) + (loss, grads, sd_nongrads)
+        grads, (loss, y) = grad_f(sd_grads, sd_nongrads, x, _t)
+        return run_optimizer(grads, list(sd_grads), mom) + (loss, y, grads, sd_nongrads)
     
     
     train_step_tx_0 = make_fx(train_step_0)(sd_grad_vals, sd_nongrad_vals, x)
-    _params, _mom, _loss, _grads, _nongrads = train_step_tx_0(sd_grad_vals, sd_nongrad_vals, x)
-    train_step_tx   = make_fx(train_step)(sd_grad_vals, sd_nongrad_vals, x, _mom)
-
     #return [train_step_tx_0, sd_grad_vals, sd_nongrad_vals, x,]
-
     replace_all_conv_backwards(train_step_tx_0)
     replace_all_aten_sgn(train_step_tx_0)
     replace_all_aten_native_batch_norm(train_step_tx_0)
     replace_all_aten_native_batch_norm_backward(train_step_tx_0)
+
+    _params, _mom, _loss, _y, _grads, _nongrads = train_step_tx_0(sd_grad_vals, sd_nongrad_vals, x)
+    train_step_tx   = make_fx(train_step)(sd_grad_vals, sd_nongrad_vals, x, _mom)
     replace_all_conv_backwards(train_step_tx)
     replace_all_aten_sgn(train_step_tx)
-    replace_all_aten_native_batch_norm_backward(train_step_tx)
     replace_all_aten_native_batch_norm(train_step_tx)
+    replace_all_aten_native_batch_norm_backward(train_step_tx)
 
     inputnames_0  =  [f'p_{k}' for i,k in enumerate(sd_keys)] + ['x']
     inputnames    = ([f'p_{k}' for i,k in enumerate(sd_keys)]
@@ -89,11 +88,13 @@ def export_model_as_functional_training_onnx(
     outputnames_0 = ([f'p_{k}_' for i,k in enumerate(sd_grad_keys)]
                   +  [f'm_{i}_' for i,_ in enumerate(_mom)]
                   +  ['loss']
+                  +  ['y']
                   +  [f'g_{k}_' for i,k in enumerate(sd_grad_keys)]
                   +  [f'p_{k}_' for i,k in enumerate(sd_nongrad_keys)])
     outputnames   = ([f'p_{k}_' for i,k in enumerate(sd_grad_keys)]
                   +  [f'm_{i}_' for i,_ in enumerate(_mom)]
                   +  ['loss']
+                  +  ['y']
                   +  [f'g_{k}_' for i,k in enumerate(sd_grad_keys)]
                   +  [f'p_{k}_' for i,k in enumerate(sd_nongrad_keys)])
 
@@ -111,7 +112,6 @@ def export_model_as_functional_training_onnx(
         input_names  = inputnames_0, 
         output_names = outputnames_0,
         do_constant_folding = False,
-        opset_version = 13,
     )
     onnx_bytes_0 = buf.getvalue()
 
@@ -124,7 +124,6 @@ def export_model_as_functional_training_onnx(
         input_names  = inputnames, 
         output_names = outputnames,
         do_constant_folding = False,
-        opset_version = 15,
     )
     onnx_bytes = buf.getvalue()
 
@@ -361,35 +360,12 @@ def replace_node_with_manual_batch_norm_backward(
     new_args = empty_args + list(node.args[7:])
     fx = make_fx(torch._decomp.decompositions.native_batch_norm_backward)(*new_args)
     
-    # for _n in fx.graph.nodes:
-    #     print(_n)
-    #     print(_n.__dict__)
-    #     print()
-    #     if len(_n.users) == 0 and _n.name != 'output':
-    #         fx.graph.erase_node(_n)
-    # fx.graph.lint()
-    # fx.recompile()
-
-    #assert 0
-    #fx.graph.
-    # print()
-    # print(fx.print_readable())
-    # print()
-    # print(list(fx.graph.nodes))
-    # print(list(fx.graph.nodes)[-1].args)
-    # print(list(fx.graph.nodes)[1].target)
-    
     node_map = { fxnode:gnode for fxnode,gnode in zip(fx.graph.nodes, node.args)}
     node_map[find_node_in_graph(fx.graph, 'output_mask_1')] = node.args[-1][0]
     node_map[find_node_in_graph(fx.graph, 'output_mask_2')] = node.args[-1][1]
     node_map[find_node_in_graph(fx.graph, 'output_mask_3')] = node.args[-1][2]
-    #node_map[list(fx.graph.nodes)[-1]] = node
-    # print(node_map)
-    #assert 0
     with graph.inserting_before(node):
         out = graph.graph_copy(fx.graph, node_map, return_output_node=True)
-        # print('>>>',out,'<<<')
-        # print('>>>',node_map,'<<<')
         fx_outputs  = list(fx.graph.nodes)[-1].args[0]
         new_outputs = tuple(node_map[n] for n in fx_outputs)
         tuple_op = graph.call_function(tuple, args=(new_outputs,))
@@ -398,8 +374,6 @@ def replace_node_with_manual_batch_norm_backward(
     
     graph.lint()
     graph.owning_module.recompile()
-    # print(graph.owning_module)
-    # assert 0
 
 
 def replace_all_aten_native_batch_norm(gm:torch.fx.graph_module.GraphModule):
@@ -408,26 +382,6 @@ def replace_all_aten_native_batch_norm(gm:torch.fx.graph_module.GraphModule):
     for node in gm.graph.nodes:
         if node.target == torch.ops.aten.native_batch_norm.default:
             replace_node_with_aten_native_batch_norm(gm.graph, node)
-            continue
-            # with graph.inserting_before(node):
-            #     #native_batch_norm returns a 3-tuple item
-            #     input    = node.args[0]
-            #     eps      = node.args[7]
-            #     var_mean = graph.call_function(
-            #         torch.ops.aten.var_mean, (input, [0,2,3], 0, True)
-            #     )
-            #     var       = graph.call_function(operator.getitem, (var_mean, 0))
-            #     mean      = graph.call_function(operator.getitem, (var_mean, 1))
-            #     vareps    = graph.call_function(torch.ops.aten.add, (var, eps))
-            #     inv_var   = graph.call_function(torch.ops.aten.rsqrt, (vareps,))
-            #     #save_mean = graph.call_function(torch.ops.aten.squeeze.dims, (mean, [0,2,3]))
-            #     #save_ivar = graph.call_function(torch.ops.aten.squeeze.dims, (inv_var, [0,2,3]))
-            #     save_mean = graph.call_function(torch.ops.aten.squeeze, (mean, ))
-            #     save_ivar = graph.call_function(torch.ops.aten.squeeze, (inv_var, ))
-            #     new_bn    = graph.call_function(torch.ops.aten.batch_norm, node.args + (False,))
-            #     tuple_op  = graph.call_function(tuple, args=([new_bn, save_mean, save_ivar],))
-            #     node.replace_all_uses_with(tuple_op)
-            # graph.erase_node(node)
     graph.lint()
     gm.recompile()
 
@@ -437,8 +391,8 @@ def replace_all_aten_native_batch_norm(gm:torch.fx.graph_module.GraphModule):
 def replace_node_with_aten_native_batch_norm(
     graph:torch.fx.graph.Graph, node:torch.fx.graph.Node
 ):
+    #https://github.com/pytorch/pytorch/blob/a44f8894fa6d973693aab44a3dda079a168b05c1/torch/_decomp/decompositions.py#L1402
     empty_args = []
-    print(node.args)
     for arg in node.args[:5]:
         meta = arg.meta['tensor_meta']
         empty_args.append(
@@ -447,7 +401,6 @@ def replace_node_with_aten_native_batch_norm(
     new_args = empty_args + list(node.args[5:])
     new_args += [True]  #functional = True
     fx = make_fx(torch._decomp.decompositions.native_batch_norm_helper)(*new_args)
-    # print(fx)
     fx.graph.erase_node(
         find_node_in_graph(fx.graph, 'functional_1')
     )
@@ -455,18 +408,30 @@ def replace_node_with_aten_native_batch_norm(
     node_map = { fxnode:gnode for fxnode,gnode in zip(fx.graph.nodes, node.args)}
     with graph.inserting_before(node):
         out = graph.graph_copy(fx.graph, node_map, return_output_node=True)
-        # print('>>>',out,'<<<')
-        # print('>>>',node_map,'<<<')
         fx_outputs  = list(fx.graph.nodes)[-1].args[0]
         new_outputs = tuple(node_map[n] for n in fx_outputs)
         tuple_op = graph.call_function(tuple, args=(new_outputs,))
         node.replace_all_uses_with(tuple_op)
+
+        running_mean_node = node.args[3]
+        running_var_node  = node.args[4]
+        new_running_mean  = graph.call_function(operator.getitem, (tuple_op, 3))
+        new_running_var   = graph.call_function(operator.getitem, (tuple_op, 4))
+
+    outputnode = list(graph.nodes)[-1]
+    with graph.inserting_before(outputnode):
+        outputlist = list(outputnode.args[0])
+        if running_mean_node in outputlist:
+            outputlist[outputlist.index(running_mean_node)] = new_running_mean
+        if running_var_node in outputlist:
+            outputlist[outputlist.index(running_var_node)] = new_running_var
+        new_outputnode = graph.output(outputlist)
+        outputnode.replace_all_uses_with(new_outputnode)
+        graph.erase_node(outputnode)
     graph.erase_node(node)
-    
     graph.lint()
     graph.owning_module.recompile()
 
-    # assert 0
 
 def replace_all_squeeze_dims(gm:torch.fx.graph_module.GraphModule):
     graph:torch.fx.graph.Graph = gm.graph
@@ -476,7 +441,6 @@ def replace_all_squeeze_dims(gm:torch.fx.graph_module.GraphModule):
                 tensor, dims = node.args
                 shape = tensor.meta['tensor_meta'].shape
                 new_shape = [shape[i] for i in range(len(shape)) if shape[i] > 1 or i not in dims ]
-                print('>>> Replacing squeeze dims', node.args, node.args[0].meta, new_shape)
                 #new_squeeze = graph.call_function(torch.ops.aten.squeeze, (node.args[0], ))
                 new_squeeze = graph.call_function(torch.reshape, (tensor, new_shape))
                 node.replace_all_uses_with(new_squeeze)
