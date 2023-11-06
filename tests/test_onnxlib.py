@@ -20,6 +20,12 @@ testdata = [
             torch.nn.Conv2d(5,1, kernel_size=1),
         ), '2dconv & batchnorm'
     ),
+    (
+        torch.nn.Sequential(
+            torch.nn.Conv2d(3,5, kernel_size=3, stride=2),
+            torch.nn.MaxPool2d(2, stride=2),
+        ), 'stride=2 & maxpool'
+    ),
 ]
 
 
@@ -106,4 +112,24 @@ def test_export(m, desc):
         print()
 
     print('@'*50)
+    #assert 0
+
+
+def test_conv_backward():
+    grad = torch.randn([1,1,4,4])
+    inp  = torch.randn([1,2,10,10])
+    wgt  = torch.randn([1,2,3,3])
+
+    args = (grad, inp, wgt, [4], [2,2], [0,0], [1,1], False, [0,0], 1, [True,True,True])
+    my_out    = onnxlib.manual_convolution_backward(*args)
+    torch_out = torch.ops.aten.convolution_backward.default(*args)
+    for t_out, m_out in zip(torch_out, my_out):
+        print('torch: ', t_out.numpy().round(2))
+        print('manual:', m_out.numpy().round(2))
+        if t_out is None:
+            assert m_out is None
+            continue
+        assert torch.allclose(t_out, m_out)
+        print()
+
     #assert 0

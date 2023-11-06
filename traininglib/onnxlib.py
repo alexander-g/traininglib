@@ -65,18 +65,20 @@ def export_model_as_functional_training_onnx(
         grads, (loss, y) = grad_f(sd_grads, sd_nongrads, x, _t)
         return run_optimizer(grads, list(sd_grads), mom) + (loss, y, grads, sd_nongrads)
     
+    decompositions = {
+        torch.ops.aten.convolution_backward.default: manual_convolution_backward,
+        torch.ops.aten.max_pool2d_with_indices_backward.default: manual_max_pool2d_with_indices_backward,
+    }
+    train_step_tx_0 = make_fx(train_step_0, decompositions)(sd_grad_vals, sd_nongrad_vals, x)
     
-    train_step_tx_0 = make_fx(train_step_0)(sd_grad_vals, sd_nongrad_vals, x)
     #return [train_step_tx_0, sd_grad_vals, sd_nongrad_vals, x,]
-    replace_all_conv_backwards(train_step_tx_0)
     replace_all_aten_sgn(train_step_tx_0)
     replace_all_aten_native_batch_norm(train_step_tx_0)
     replace_all_aten_native_batch_norm_backward(train_step_tx_0)
     replace_all_aten_threshold_backward(train_step_tx_0)
 
     _params, _mom, _loss, _y, _grads, _nongrads = train_step_tx_0(sd_grad_vals, sd_nongrad_vals, x)
-    train_step_tx   = make_fx(train_step)(sd_grad_vals, sd_nongrad_vals, x, _mom)
-    replace_all_conv_backwards(train_step_tx)
+    train_step_tx   = make_fx(train_step, decompositions)(sd_grad_vals, sd_nongrad_vals, x, _mom)
     replace_all_aten_sgn(train_step_tx)
     replace_all_aten_native_batch_norm(train_step_tx)
     replace_all_aten_native_batch_norm_backward(train_step_tx)
@@ -182,70 +184,105 @@ def filter_nongrad_values(sd:StateDict) -> tp.Tuple[StateDict, StateDict]:
     return sd_grad, sd_nongrad 
 
 
-def replace_all_conv_backwards(gm:torch.fx.graph_module.GraphModule):
-    '''Replace all conv_backward nodes in a traced fx graph with equivalent operations,
-       because torch.jit.trace cannot handle it.
-    '''
-    graph:torch.fx.graph.Graph = gm.graph
-    for node in gm.graph.nodes:
-        if node.target == torch.ops.aten.convolution_backward.default:
-            replace_node_with_manual_conv_backwards(graph, node)
-    graph.lint()
-    gm.recompile()
+def dilate(x:torch.Tensor, dilation:tp.Tuple[int,int]) -> torch.Tensor:
+    dilation = tuple(dilation)
+    assert dilation in [(1,1), (2,2)], NotImplemented
+    if dilation == (1,1):
+        return x
+    
+    B,C,H,W = x.shape
+    indices = torch.arange(W)*2
+    indices = indices.reshape(1,1,1,-1)
+    indices = indices.expand(B,C,W,-1)
+    b = torch.zeros([B,C,H,W*2])
+    b = torch.scatter(b, 3, indices, x)
 
-def replace_node_with_manual_conv_backwards(
-    graph:torch.fx.graph.Graph, node:torch.fx.graph.Node
-):
-    with graph.inserting_before(node):
-        gradient                  = node.args[0]
-        input: torch.fx.node.Node = node.args[1]  # type: ignore
-        weight:torch.fx.node.Node = node.args[2]  # type: ignore
-        conv_params               = node.args[4:10]
-        
-        input_shape     = tuple(input.meta['tensor_meta'].shape) 
-        n_groups        = node.args[9]
-        input_T         = graph.call_function(torch.ops.aten.transpose, (input,    0,1))
-        if n_groups != 1:
-            input_T  = graph.call_function(
-                torch.reshape,
-                (input_T, (input_shape[1]//n_groups, input_shape[0]*n_groups)+input_shape[2:] ) 
-            )
-        gradient_T      = graph.call_function(torch.ops.aten.transpose, (gradient, 0,1))
-        weight_grad_T   = graph.call_function(
-            torch.ops.aten.convolution.default, (input_T, gradient_T, None)+conv_params
+    indices = torch.arange(H)*2
+    indices = indices.reshape(1,1,-1,1)
+    indices = indices.expand(B,C,-1,W*2)
+    c = torch.zeros([B,C,H*2,W*2])
+    c = torch.scatter(c, 2, indices, b)
+
+    return c
+
+def manual_convolution_backward(
+    grad_out:   torch.Tensor,
+    input:      torch.Tensor,
+    weight:     torch.Tensor,
+    _:          tp.Any,       #not used
+    stride:     tp.Tuple[int,int], 
+    padding:    tp.Tuple[int,int], 
+    dilation:   tp.Tuple[int,int], 
+    transposed: bool, 
+    outpadding: tp.Tuple[int,int], 
+    groups:     int,
+    outmask:    tp.Tuple[bool,bool,bool],
+) -> tp.List[torch.Tensor|None]:
+    '''Unoptimized and incomplete implementation of the convolution backward pass.
+       Can be exported to ONNX'''
+    B,C,H,W = input.shape
+
+    input_T = input.transpose(0,1)
+    if groups != 1:
+        input_T = input_T.reshape(C//groups, B*groups, H, W)
+    grad_out_T    = grad_out.transpose(0,1)
+    dilation_gw   = stride
+    stride_gw     = [1,1]  #maybe = dilation?
+    grad_weight_T = torch.ops.aten.convolution.default(
+        input_T, grad_out_T, None, stride_gw, padding, dilation_gw, transposed, outpadding, groups
+    )
+    grad_weight = grad_weight_T.transpose(0,1)
+    #need to truncate, can happen on odd dimensions
+    grad_weight = grad_weight[..., :weight.shape[2], :weight.shape[3]]
+
+    grad_out_flat = grad_out.flatten(start_dim=2)
+    grad_bias     = grad_out_flat.sum(dim=[0,2])
+
+    grad_input        = None
+    grad_input_needed = outmask[0]
+    if grad_input_needed:
+        if groups != 1:
+            weight = weight.reshape(B//groups, C*groups, *weight.shape[2:] )
+        flip_dims     = list(range(2, len(weight.shape)))
+        weight_flip   = torch.flip(weight, dims=flip_dims)
+        weight_flip_T = weight_flip.transpose(0,1)
+        padding_gi    = list(s-1 for s in weight.shape[2:])
+        grad_out_dil  = dilate(grad_out, dilation=stride)
+        stride_gi     = [1,1]
+        dilation_gi   = [1,1]
+        grad_input    = torch.ops.aten.convolution.default(
+            grad_out_dil, 
+            weight_flip_T, 
+            None, 
+            stride_gi, 
+            padding_gi, 
+            dilation_gi, 
+            transposed, 
+            outpadding, 
+            groups,
         )
-        weight_grad     = graph.call_function(torch.ops.aten.transpose, (weight_grad_T,    0,1))
-        
-        gradient_1d     = graph.call_function(
-            torch.flatten, (gradient, ), kwargs={'start_dim':2}
-        )
-        bias_gradient   = graph.call_function(
-            torch.ops.aten.sum, (gradient_1d,), kwargs={'dim':[0,2]} 
-        )
-        
-        input_gradient_needed  = node.args[10][0] # type: ignore
-        input_gradient  = None
-        if input_gradient_needed:
-            weight_shape    = weight.meta['tensor_meta'].shape
-            if n_groups != 1:
-                weight      = graph.call_function(
-                torch.reshape, 
-                (weight, (weight_shape[0]//n_groups, weight_shape[1]*n_groups) + weight_shape[2:] )
-            )
-            flip_dims       = list(range(2, len(weight_shape)))
-            weight_flip     = graph.call_function(torch.flip, (weight,), kwargs={'dims':flip_dims} )
-            weight_flip_T   = graph.call_function(torch.transpose, (weight_flip, 0,1))
-            weight_padding  = list(s-1 for s in weight_shape[2:])
-            conv2_params    = conv_params[:1] + (weight_padding,) + conv_params[2:]
-            input_gradient  = graph.call_function(
-                torch.ops.aten.convolution.default, (gradient, weight_flip_T, None)+conv2_params
-            )
-        
-        tuple_op        = graph.call_function(
-            tuple, args=([input_gradient, weight_grad, bias_gradient],)
-        )
-        node.replace_all_uses_with(tuple_op)
-    graph.erase_node(node)
+    return [grad_input, grad_weight, grad_bias]
+
+
+def manual_max_pool2d_with_indices_backward(
+    grad_output: torch.Tensor,
+    input:       torch.Tensor,
+    kernel_size: tp.Tuple[int,int],
+    stride:      tp.Tuple[int,int],
+    padding:     tp.Tuple[int,int],
+    dilation:    tp.Tuple[int,int],
+    ceil_mode:   bool,
+    indices:     torch.Tensor,
+) -> torch.Tensor:
+    '''Manual implementation of torch.ops.aten.max_pool2d_with_indices_backward.
+       Can be exported to ONNX.'''
+    intermediate_shape = input.shape[:2] + (-1,)
+    z = torch.zeros_like(input.reshape(intermediate_shape))
+    grad_output = grad_output.reshape(intermediate_shape)
+    indices     = indices.reshape(intermediate_shape)
+    output      = torch.scatter(z, 2, indices, grad_output)
+    return output.reshape(input.shape)
+
 
 def replace_all_aten_sgn(gm:torch.fx.graph_module.GraphModule):
     '''Replace all torch.ops.aten.sgn with torch.sign, 
