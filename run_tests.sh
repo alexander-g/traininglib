@@ -1,3 +1,3 @@
 #!/bin/sh
 
-pytest --disable-warnings tests/
+pytest --disable-warnings $@ tests/

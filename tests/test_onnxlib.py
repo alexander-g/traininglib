@@ -1,9 +1,19 @@
 from traininglib import onnxlib
 import onnxruntime as ort
-import torch
+import torch, torchvision
 import numpy as np
 import pytest
 
+
+class MiniResNet(torch.nn.Sequential):
+    def __init__(self):
+        super().__init__(
+            torch.nn.Conv2d(3,8, kernel_size=(7,7), stride=(2,2), padding=(3,3), bias=False),
+            #torch.nn.BatchNorm2d(8),
+            torch.nn.ReLU(inplace=True),
+            torch.nn.MaxPool2d(kernel_size=3, stride=2, padding=1, dilation=1, ceil_mode=False),
+            torch.nn.AdaptiveAvgPool2d((1,1)),
+        )
 
 testdata = [
     (
@@ -18,14 +28,16 @@ testdata = [
             torch.nn.BatchNorm2d(5),
             torch.nn.ReLU(),
             torch.nn.Conv2d(5,1, kernel_size=1),
-        ), '2dconv & batchnorm'
+        ), '2dconv-batchnorm'
     ),
     (
         torch.nn.Sequential(
             torch.nn.Conv2d(3,5, kernel_size=3, stride=2),
             torch.nn.MaxPool2d(2, stride=2),
-        ), 'stride=2 & maxpool'
+        ), 'stride=2-maxpool'
     ),
+    (MiniResNet(), 'miniresnet'),
+    #(torchvision.models.resnet18(weights=None, progress=None), 'resnet18'),
 ]
 
 
@@ -38,7 +50,7 @@ def test_export(m, desc):
 
     exported = onnxlib.export_model_as_functional_training_onnx(m, loss_func, x)
 
-    x = torch.randn([2,3,10,10])
+    x = torch.rand(x.shape) * 0
 
     onnx_outputs = []
 
@@ -82,14 +94,25 @@ def test_export(m, desc):
         loss.backward()
 
         grads = {k:p.grad for k,p in zip(m.state_dict().keys(), m.parameters()) }
-        #print('grads torch:', {k:v.numpy().astype('float64') for k,v in grads.items()})
+        grads = {k:v for k,v in grads.items() if 'running' not in k}
+        grads = {k:v for k,v in grads.items() if v is not None}
 
         optim.step()
         optim.zero_grad()
 
-        torch_out = {k:p.data.numpy().copy() for k,p in m.state_dict().items()}
+        torch_out = {}
+        #forward pass output
         torch_out['y']    = y.detach().numpy()
+        #loss
         torch_out['loss'] = float(loss)
+        #gradients
+        torch_out.update(
+            {f'g_{k}_':v.numpy().astype('float64') for k,v in reversed(grads.items())}
+        )
+        #parameters
+        torch_out.update(
+            {f'p_{k}_':p.data.numpy().copy() for k,p in reversed(m.state_dict().items())}
+        )
         torch_outputs.append(torch_out)
         print('=================')
     
@@ -101,11 +124,11 @@ def test_export(m, desc):
         print(f'>>>>>>>>>> train_step: {i} <<<<<<<<<<')
 
         for [k, p_torch] in torch_out_i.items():
-            k_onnx = f'p_{k}_' if k not in ['y', 'loss'] else k
+            k_onnx = k
             p_onnx = onnx_out_i[k_onnx]
             print(k)
-            print('torch:', np.ravel(p_torch)[-5:], getattr(p_torch, 'shape', None))
-            print('onnx: ', np.ravel(p_onnx)[-5:],  getattr(p_onnx,  'shape', None))
+            print('torch:', np.ravel(p_torch)[-16:], getattr(p_torch, 'shape', None))
+            print('onnx: ', np.ravel(p_onnx)[-16:],  getattr(p_onnx,  'shape', None))
             print('diff: ', np.abs(p_torch - p_onnx).max() )
             assert np.allclose(p_torch, p_onnx, atol=1e-06)
             print()
@@ -115,21 +138,63 @@ def test_export(m, desc):
     #assert 0
 
 
-def test_conv_backward():
-    grad = torch.randn([1,1,4,4])
-    inp  = torch.randn([1,2,10,10])
-    wgt  = torch.randn([1,2,3,3])
+conv_testdata = [
+    ([
+        torch.randn([1,1,4,4]), torch.randn([1,2,10,10]), torch.randn([1,2,3,3]),
+        [4], [2,2], [0,0], [1,1], False, [0,0], 1, [True,True,True]
+    ], 'stride=2'),
+    ([
+        torch.randn([2,10,1,1]), torch.randn([2,5,2,2]), torch.randn([10,5,3,3]),
+        [4], [2,2], [1,1], [1,1], False, [0,0], 1, [True,True,True]
+    ], 'stride=2,padding=1'),
+    ([
+        torch.randn([2,10,2,2]), torch.randn([2,5,3,3]), torch.randn([10,5,1,1]),
+        [4], [2,2], [0,0], [1,1], False, [0,0], 1, [True,True,True]
+    ], 'need-to-truncate-shape'),
+    ([
+        torch.rand([2,8,5,5]), torch.rand([2,3,10,10]), torch.rand([8,3,7,7]),
+        [8], [2,2], [3,3], [1,1], False, [0,0], 1, [False,True,True]
+    ], 'resnet-first-layer')
+]
 
-    args = (grad, inp, wgt, [4], [2,2], [0,0], [1,1], False, [0,0], 1, [True,True,True])
+@pytest.mark.parametrize("args, desc", conv_testdata)
+def test_conv_backward(args, desc):
+    print(f'==========TEST START: {desc}==========')
     my_out    = onnxlib.manual_convolution_backward(*args)
     torch_out = torch.ops.aten.convolution_backward.default(*args)
     for t_out, m_out in zip(torch_out, my_out):
-        print('torch: ', t_out.numpy().round(2))
-        print('manual:', m_out.numpy().round(2))
         if t_out is None:
             assert m_out is None
             continue
+        print('torch: ', t_out.numpy().round(2), t_out.shape)
+        print('manual:', m_out.numpy().round(2), m_out.shape)
+        print('diff: ', np.abs(t_out.numpy() - m_out.numpy()).max() )
         assert torch.allclose(t_out, m_out)
         print()
 
     #assert 0
+
+
+
+maxpool_testdata = [
+    ([
+        torch.randn([1,5,2,1]), torch.randn(1,5,4,3), [2,2], [2,2], [0,0], [1,1], False,
+        torch.randint(0,2, [1,5,2,1])
+    ], 'maxpool2d.basic'),
+    ([
+        torch.randn([2,8,3,3]), torch.randn([2,8,5,5]), [3,3], [2,2], [1,1], [1,1], False,
+        torch.randint(0,24, [2,8,3,3]),
+    ], 'maxpool2d.kernel3x3')
+]
+
+@pytest.mark.parametrize("args, desc", maxpool_testdata)
+def test_maxpool_backward(args, desc):
+    print(f'==========TEST START: {desc}==========')
+    print(args[0].numpy().round(2))
+    print(args[-1][0])
+    torch_out = torch.ops.aten.max_pool2d_with_indices_backward.default(*args)
+    my_out    = onnxlib.manual_max_pool2d_with_indices_backward(*args)
+    print('torch: ', torch_out.numpy().round(2), torch_out.shape)
+    print('manual:', my_out.numpy().round(2), my_out.shape)
+    assert torch.allclose(torch_out, my_out)
+    print()
