@@ -42,7 +42,7 @@ class BaseModel(torch.nn.Module):
     def finalize_inference(self, raw:tp.List[torch.Tensor], x:torch.Tensor) -> np.ndarray:
         '''Convert raw batched outputs to the final result.
            x: original input image before preprocessing'''
-        assert len(raw) == 1
+        assert len(raw) == 1, NotImplementedError('Custom output batch handling required')
         return raw[0].cpu().numpy()[0]
     
     def preprocess(self, x: torch.Tensor) -> torch.Tensor:
@@ -54,7 +54,7 @@ class BaseModel(torch.nn.Module):
 
     def postprocess(self, raw: tp.Any, x: torch.Tensor) -> tp.Any:
         """Output postprocessing.
-           x: original input image before preprocessing"""
+           `x`: original input image before preprocessing"""
         return raw
 
     @property

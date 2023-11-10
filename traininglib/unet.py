@@ -15,7 +15,7 @@ class UNet(torch.nn.Module):
             inter_c        = inter_c or out_c
             self.conv1x1   = torch.nn.Conv2d(in_c, inter_c, 1)
             self.convblock = torch.nn.Sequential(
-                torch.nn.Conv2d(inter_c, out_c, 3, padding=1, bias=0),
+                torch.nn.Conv2d(inter_c, out_c, 3, padding=1, bias=False),
                 torch.nn.BatchNorm2d(out_c),
                 torch.nn.ReLU(),
             )
@@ -73,11 +73,11 @@ def _clone_conv2d_with_new_input_channels(
 ) -> torch.nn.Conv2d:
     new_conv = torch.nn.Conv2d(
         in_channels  = new_input_channels,
-        out_channels = prev.out_channels,
-        kernel_size  = prev.kernel_size, 
-        stride       = prev.stride, 
-        padding      = prev.padding, 
-        dilation     = prev.dilation,
+        out_channels = prev.out_channels,    
+        kernel_size  = prev.kernel_size,     # type: ignore [arg-type]
+        stride       = prev.stride,          # type: ignore [arg-type]
+        padding      = prev.padding,         # type: ignore [arg-type]
+        dilation     = prev.dilation,        # type: ignore [arg-type]
         groups       = prev.groups,
         bias         = prev.bias is not None
     )
@@ -87,7 +87,7 @@ def _clone_conv2d_with_new_input_channels(
     new_conv.weight.data[:, :n_copy_channels, :, :] = prev.weight.data[:, :n_copy_channels, :, :]
     
     if prev.bias is not None:
-        new_conv.bias.data = prev.bias.data
+        new_conv.bias.data = prev.bias.data # type: ignore [union-attr]
     return new_conv
 
 def resnet18_backbone(

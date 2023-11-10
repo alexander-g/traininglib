@@ -65,7 +65,7 @@ def ensure_imagetensor(x:str|np.ndarray|torch.Tensor) -> torch.Tensor:
 
 def resize_tensor(
     x:    torch.Tensor, 
-    size: int|tp.Tuple[int,int], 
+    size: int|tp.Tuple[int,int]|torch.Size, 
     mode: tp.Literal['nearest', 'bilinear'],
     align_corners: bool|None = None,
 ) -> torch.Tensor:
@@ -209,7 +209,7 @@ def slice_into_patches_with_overlap(
 
 def stitch_overlapping_patches(
     patches:        tp.List[torch.Tensor], 
-    imageshape:     tp.Tuple[int,int], 
+    imageshape:     tp.Tuple[int,int]|torch.Size, 
     slack:          int                     = 32, 
     out:            torch.Tensor|None       = None,
 ) -> torch.Tensor:
