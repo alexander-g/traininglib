@@ -1,3 +1,4 @@
+import typing as tp
 from traininglib import onnxlib
 import onnxruntime as ort
 import torch, torchvision
@@ -20,7 +21,7 @@ testdata = [
         torch.nn.Sequential(
             torch.nn.Conv2d(3,5, kernel_size=3),
             torch.nn.Conv2d(5,1, kernel_size=1),
-        ) , '2x 2dconv'
+        ) , '2x-2dconv'
     ),
     (
         torch.nn.Sequential(
@@ -34,7 +35,7 @@ testdata = [
         torch.nn.Sequential(
             torch.nn.Conv2d(3,5, kernel_size=3, stride=2),
             torch.nn.MaxPool2d(2, stride=2),
-        ), 'stride=2-maxpool'
+        ), 'stride2-maxpool'
     ),
     (MiniResNet(), 'miniresnet'),
     #(torchvision.models.resnet18(weights=None, progress=None), 'resnet18'),
@@ -50,29 +51,29 @@ def test_export(m, desc):
 
     exported = onnxlib.export_model_as_functional_training_onnx(m, loss_func, x)
 
-    x = torch.rand(x.shape) * 0
+    x = torch.rand(x.shape) #* 0
 
     onnx_outputs = []
 
-    sess0    = ort.InferenceSession(exported.onnx_bytes_0)
-    outputs0 = [o.name for o in sess0.get_outputs()]
-    inputsnames0  = [o.name for o in sess0.get_inputs()]
+    sess0        = ort.InferenceSession(exported.onnx_bytes_0)
+    outputnames0 = [o.name for o in sess0.get_outputs()]
+    inputsnames0 = [o.name for o in sess0.get_inputs()]
     inputs0  = onnxlib.state_dict_to_onnx_input(m.state_dict(), inputsnames0)
     inputs0.update({'x': x.numpy()})
-    out0     = sess0.run(outputs0, inputs0)
-    out0     = dict(zip(outputs0, out0))
+    out0     = sess0.run(outputnames0, inputs0)
+    out0     = dict(zip(outputnames0, out0))
     onnx_outputs.append(out0)
     del sess0
 
-    sess1       = ort.InferenceSession(exported.onnx_bytes)
-    outputs1    = [o.name for o in sess1.get_outputs()]
-    inputnames1 = [i.name for i in sess1.get_inputs() if not i.name in ['x']]
+    sess1        = ort.InferenceSession(exported.onnx_bytes)
+    outputnames1 = [o.name for o in sess1.get_outputs()]
+    inputnames1  = [i.name for i in sess1.get_inputs()]
     for i in range(3):
         prev_out     = onnx_outputs[-1]
-        inputs1      = {k:prev_out[f'{k}_'] for k in inputnames1}
+        inputs1      = {k:prev_out[f'{k}.output'] for k in inputnames1 if k not in ['x']}
         inputs1.update(x = x.numpy())
-        out1        = sess1.run(outputs1, inputs1)
-        out1        = dict(zip(outputs1, out1))
+        out1        = sess1.run(outputnames1, inputs1)
+        out1        = dict(zip(outputnames1, out1))
         onnx_outputs.append(out1)
     
     print('onnx y0:   ', out0['y'].sum(-1).sum(-1).ravel())
@@ -107,11 +108,11 @@ def test_export(m, desc):
         torch_out['loss'] = float(loss)
         #gradients
         torch_out.update(
-            {f'g_{k}_':v.numpy().astype('float64') for k,v in reversed(grads.items())}
+            {f'{k}.gradient.output':v.numpy().astype('float64') for k,v in reversed(grads.items())}
         )
         #parameters
         torch_out.update(
-            {f'p_{k}_':p.data.numpy().copy() for k,p in reversed(m.state_dict().items())}
+            {f'{k}.output':p.data.numpy().copy() for k,p in reversed(m.state_dict().items())}
         )
         torch_outputs.append(torch_out)
         print('=================')
@@ -166,6 +167,7 @@ def test_conv_backward(args, desc):
         if t_out is None:
             assert m_out is None
             continue
+        m_out = tp.cast(torch.Tensor, m_out)
         print('torch: ', t_out.numpy().round(2), t_out.shape)
         print('manual:', m_out.numpy().round(2), m_out.shape)
         print('diff: ', np.abs(t_out.numpy() - m_out.numpy()).max() )

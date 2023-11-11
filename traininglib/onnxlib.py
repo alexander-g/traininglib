@@ -2,6 +2,7 @@ import typing as tp
 import torch
 import numpy as np
 import io
+import copy
 import operator
 import warnings
 warnings.simplefilter('ignore', UserWarning)  #pytorch throws too many of those
@@ -13,32 +14,43 @@ import sys
 sgd_module = sys.modules['torch.optim.sgd']
 
 
+StateDict  = tp.Dict[str, torch.nn.Parameter]
+TensorDict = tp.Dict[str, torch.Tensor]
+
+
+class DebugInfo(tp.NamedTuple):
+    #fx functions as converted to onnx
+    train_step_tx_0: tp.Callable
+    train_step_tx:   tp.Callable
+    #fx functions without modifications
+    train_step_tx_0_unmodified: tp.Callable
+    train_step_tx_unmodified:   tp.Callable
+
+
 class ExportedONNX(tp.NamedTuple):
     onnx_bytes_0: bytes
     onnx_bytes:   bytes
+
+    #only if _debug == True
+    debug: DebugInfo|None = None
+
+
 
 def export_model_as_functional_training_onnx(
     m:         torch.nn.Module,
     loss_func: tp.Callable[[torch.Tensor, torch.Tensor], torch.Tensor],
     x:         torch.Tensor,
+    _debug:    bool = False,
 ) -> ExportedONNX:
-    sd                  = {k:v.clone() for k,v in dict(m.state_dict()).items()}
-    sd_grad, sd_nongrad = filter_nongrad_values(sd)
-    sd_grad_keys        = tuple(sd_grad.keys())
-    sd_nongrad_keys     = tuple(sd_nongrad.keys())
-    sd_keys             = sd_grad_keys + sd_nongrad_keys
-    sd_grad_vals        = tuple(sd_grad.values())
-    sd_nongrad_vals     = tuple(sd_nongrad.values())
+    sd = {k:v.clone() for k,v in dict(m.state_dict()).items()}
     
     def forward_step_f(
-        sd_grads:    tp.Tuple[torch.nn.Parameter], 
-        sd_nongrads: tp.Tuple[torch.nn.Parameter],
+        sd_grads:    StateDict,
+        sd_nongrads: StateDict,
         x:           torch.Tensor, 
         t:           torch.Tensor,
     ) -> tp.Tuple[torch.Tensor, torch.Tensor]:
-        # torch.jit.trace() complains if a dict is passed to this function
-        # but torch.func.functional_call() wants a dict
-        sd     = dict(zip(sd_keys, sd_grads + sd_nongrads))
+        sd     = sd_grads | sd_nongrads
         y      = torch.func.functional_call(m, sd, x, strict=True)
         loss   = loss_func(y, t)
         return loss, y
@@ -47,103 +59,153 @@ def export_model_as_functional_training_onnx(
     grad_f = torch.func.grad_and_value(forward_step_f, argnums=0, has_aux=True)
 
     def train_step_0(
-        sd_grads:    tp.Tuple[torch.nn.Parameter],
-        sd_nongrads: tp.Tuple[torch.nn.Parameter],
-        x:           torch.Tensor
-    ):
+        sd: StateDict,
+        x:  torch.Tensor
+    ) -> tp.Dict[str, torch.Tensor|TensorDict|StateDict]:
         _t = 0 #TODO
-        grads, (loss, y) = grad_f(sd_grads, sd_nongrads, x, _t)
-        return run_optimizer_init(grads, list(sd_grads)) + (loss, y, grads, sd_nongrads)
+        sd_grads, sd_nongrads = filter_nongrad_values(sd)
+        gradients, (loss, y)  = grad_f(sd_grads, sd_nongrads, x, _t)
+        new_sd_grads, buffers = run_optimizer_init(gradients, sd_grads)
+        new_sd: StateDict     = new_sd_grads | sd_nongrads
+        return {
+            'state_dict': new_sd,
+            'buffers':    buffers,
+            'gradients':  gradients,
+            'loss':       loss,
+            'y':          y,
+        }
 
     def train_step(
-        sd_grads:    tp.Tuple[torch.nn.Parameter],
-        sd_nongrads: tp.Tuple[torch.nn.Parameter],
-        x:           torch.Tensor,
-        mom:         tp.List[torch.Optional[torch.Tensor]],
+        sd:      StateDict,
+        x:       torch.Tensor,
+        buffers: TensorDict,
     ):
         _t = 0 #TODO
-        grads, (loss, y) = grad_f(sd_grads, sd_nongrads, x, _t)
-        return run_optimizer(grads, list(sd_grads), mom) + (loss, y, grads, sd_nongrads)
+        sd_grads, sd_nongrads = filter_nongrad_values(sd)
+        gradients, (loss, y)  = grad_f(sd_grads, sd_nongrads, x, _t)
+        new_sd_grads, buffers = run_optimizer(gradients, sd_grads, buffers) # type: ignore
+        new_sd: StateDict     = new_sd_grads | sd_nongrads
+        return {
+            'state_dict': new_sd,
+            'buffers':    buffers,
+            'gradients':  gradients,
+            'loss':       loss,
+            'y':          y,
+        }
     
     decompositions = {
         torch.ops.aten.convolution_backward.default: manual_convolution_backward,
         torch.ops.aten.max_pool2d_with_indices_backward.default: manual_max_pool2d_with_indices_backward,
+        torch.ops.aten.threshold_backward.default: torch._decomp.decompositions.threshold_backward,
     }
-    train_step_tx_0 = make_fx(train_step_0, decompositions)(sd_grad_vals, sd_nongrad_vals, x)
-    
-    #return [train_step_tx_0, sd_grad_vals, sd_nongrad_vals, x,]
+    train_step_tx_0 = make_fx(train_step_0, decompositions, tracing_mode='fake')(sd, x)
     replace_all_aten_sgn(train_step_tx_0)
     replace_all_aten_native_batch_norm(train_step_tx_0)
     replace_all_aten_native_batch_norm_backward(train_step_tx_0)
-    replace_all_aten_threshold_backward(train_step_tx_0)
+    replace_all_inplace_add(train_step_tx_0)
+    replace_all_inplace_mul(train_step_tx_0)
+    if _debug:
+        train_step_tx_0 = _return_all_nodes(train_step_tx_0)
 
-    _params, _mom, _loss, _y, _grads, _nongrads = train_step_tx_0(sd_grad_vals, sd_nongrad_vals, x)
-    train_step_tx   = make_fx(train_step, decompositions)(sd_grad_vals, sd_nongrad_vals, x, _mom)
+        #unmodified, i.e. no decompositions
+        train_step_tx_0_unmodified = make_fx(train_step_0, tracing_mode='fake')(sd, x)
+        #modified after all, removing inplace ops
+        replace_all_aten_native_batch_norm(train_step_tx_0_unmodified)
+        replace_all_inplace_add(train_step_tx_0_unmodified)
+        replace_all_inplace_mul(train_step_tx_0_unmodified)
+        train_step_tx_0_unmodified = _return_all_nodes(train_step_tx_0_unmodified)
+
+
+    _init_out = train_step_tx_0(sd, x)
+    train_step_tx   = make_fx(
+        train_step, decompositions, tracing_mode='fake'
+    )(sd, x, _init_out['buffers'])
     replace_all_aten_sgn(train_step_tx)
     replace_all_aten_native_batch_norm(train_step_tx)
     replace_all_aten_native_batch_norm_backward(train_step_tx)
-    replace_all_aten_threshold_backward(train_step_tx)
+    replace_all_inplace_add(train_step_tx)
+    replace_all_inplace_mul(train_step_tx)
+    if _debug:
+        train_step_tx = _return_all_nodes(train_step_tx)
 
-    inputnames_0  =  [f'p_{k}' for i,k in enumerate(sd_keys)] + ['x']
-    inputnames    = ([f'p_{k}' for i,k in enumerate(sd_keys)]
-                  +  ['x']
-                  +  [f'm_{i}' for i,_ in enumerate(_mom)] )
-
-    outputnames_0 = ([f'p_{k}_' for i,k in enumerate(sd_grad_keys)]
-                  +  [f'm_{i}_' for i,_ in enumerate(_mom)]
-                  +  ['loss']
-                  +  ['y']
-                  +  [f'g_{k}_' for i,k in enumerate(sd_grad_keys)]
-                  +  [f'p_{k}_' for i,k in enumerate(sd_nongrad_keys)])
-    outputnames   = ([f'p_{k}_' for i,k in enumerate(sd_grad_keys)]
-                  +  [f'm_{i}_' for i,_ in enumerate(_mom)]
-                  +  ['loss']
-                  +  ['y']
-                  +  [f'g_{k}_' for i,k in enumerate(sd_grad_keys)]
-                  +  [f'p_{k}_' for i,k in enumerate(sd_nongrad_keys)])
+        #unmodified, i.e. no decompositions
+        train_step_tx_unmodified = make_fx(train_step, tracing_mode='fake')(
+            sd, x, _init_out['buffers']
+        )
+        #modified after all, removing inplace ops
+        replace_all_aten_native_batch_norm(train_step_tx_unmodified)
+        replace_all_inplace_add(train_step_tx_unmodified)
+        replace_all_inplace_mul(train_step_tx_unmodified)
+        train_step_tx_unmodified = _return_all_nodes(train_step_tx_unmodified)
 
 
-    #print(train_step_tx_0)
-    #print(train_step_tx_0(sd_grad_vals, sd_nongrad_vals, x))
-    #torch.jit.trace(train_step_tx_0, (sdvals, x))
+    inputnames_0  = list(sd.keys()) + ['x']
+    inputnames    = inputnames_0 + [f'{k}.buffer' for k in _init_out['buffers'].keys()]
+    outputnames_0 = [f'{k}.output' for k in _init_out['state_dict'].keys()]         \
+                  + [f'{k}.buffer.output' for k in _init_out['buffers'].keys()]     \
+                  + [f'{k}.gradient.output' for k in _init_out['gradients'].keys()] \
+                  + ['loss', 'y']
+    outputnames   = list(outputnames_0)
+    if _debug:
+        outputnames_0 += [f'{k}.debug' for k in _init_out['debug'].keys()]
+        
+        _2nd_out = train_step_tx_unmodified(sd, x, _init_out['buffers'])
+        outputnames   += [f'{k}.debug' for k in _2nd_out['debug'].keys()]
+
 
     buf = io.BytesIO()
     torch.onnx.export(
         train_step_tx_0, 
-        (sd_grad_vals, sd_nongrad_vals, x), 
+        {'sd':sd, 'x':x},
         buf, 
         training     = torch.onnx.TrainingMode.TRAINING,
         input_names  = inputnames_0, 
         output_names = outputnames_0,
         do_constant_folding = False,
+        opset_version       = 16,
     )
     onnx_bytes_0 = buf.getvalue()
 
     buf = io.BytesIO()
     torch.onnx.export(
         train_step_tx, 
-        (sd_grad_vals, sd_nongrad_vals, x, _mom), 
+        {'sd':sd, 'x':x, 'buffers':_init_out['buffers']},
         buf, 
         training     = torch.onnx.TrainingMode.TRAINING,
         input_names  = inputnames, 
         output_names = outputnames,
         do_constant_folding = False,
+        opset_version       = 16,
     )
     onnx_bytes = buf.getvalue()
 
-    return ExportedONNX(onnx_bytes_0, onnx_bytes)
+    if not _debug:
+        return ExportedONNX(onnx_bytes_0, onnx_bytes)
+    else:
+        return ExportedONNX(
+            onnx_bytes_0, onnx_bytes, debug = DebugInfo(
+                train_step_tx_0,
+                train_step_tx,
+                train_step_tx_0_unmodified, 
+                train_step_tx_unmodified,
+            )
+        )
 
 
 
 def run_optimizer(
-    grads:  tp.List[torch.Tensor],
-    params: tp.List[torch.Tensor],
-    mom:    tp.List[torch.Optional[torch.Tensor]],
-):
+    gradients:  TensorDict,
+    parameters: StateDict,
+    buffers:    tp.Dict[str, torch.Optional[torch.Tensor]],
+) -> tp.Tuple[StateDict, TensorDict]:
+    keys: tp.List[str] = list(parameters.keys())
+    parameters_list: tp.List[torch.Tensor] = [parameters[k] for k in keys]
+    gradients_list:  tp.List[torch.Tensor] = [gradients[k]  for k in keys]
+    buffers_list:    tp.List[torch.Tensor|None] = [buffers[k] for k in keys]
     sgd_module.sgd(
-        params, 
-        grads, 
-        mom, 
+        parameters_list, 
+        gradients_list, 
+        buffers_list, 
         weight_decay = 1e-4, 
         momentum     = 0.9, 
         lr           = 0.05, 
@@ -151,21 +213,21 @@ def run_optimizer(
         nesterov     = False, 
         maximize     = False,
     )
-    return params, mom
+    #values are updated inplace
+    new_parameters = dict(zip(keys, parameters_list))
+    new_buffers    = dict(zip(keys, buffers_list))
+    return new_parameters, new_buffers  # type: ignore [return-value]
 
 def run_optimizer_init(
-    grads:  tp.List[torch.Tensor],
-    params: tp.List[torch.Tensor],
-):
-    mom: tp.List[tp.Optional[torch.Tensor]] = [None for _ in params]
-    run_optimizer(grads, params, mom)
-    return params, mom
+    gradients:  TensorDict,
+    parameters: StateDict,
+) -> tp.Tuple[StateDict, TensorDict]:
+    buffers: tp.Dict[str, tp.Optional[torch.Tensor]] = {k:None for k in parameters.keys()}
+    return run_optimizer(gradients, parameters, buffers)
 
-
-StateDict = tp.Dict[str, torch.nn.Parameter]
 
 def state_dict_to_onnx_input(sd:StateDict, onnxnames:tp.List[str]) -> tp.Dict[str, np.ndarray]:
-    inputs = { f'p_{k}':v.data.numpy() for k,v in sd.items() }
+    inputs = { k:v.data.numpy() for k,v in sd.items() }
     inputs = { k:v for k,v in inputs.items() if k in onnxnames }
     assert len(inputs)
     return inputs
@@ -185,7 +247,7 @@ def filter_nongrad_values(sd:StateDict) -> tp.Tuple[StateDict, StateDict]:
 
 
 def dilate(x:torch.Tensor, dilation:tp.Tuple[int,int]) -> torch.Tensor:
-    dilation = tuple(dilation)
+    dilation = tuple(dilation) # type: ignore
     assert dilation in [(1,1), (2,2)], NotImplemented
     if dilation == (1,1):
         return x
@@ -232,11 +294,13 @@ def manual_convolution_backward(
         input_T, grad_out_T, None, stride_gw, padding, dilation_gw, transposed, outpadding, groups
     )
     grad_weight = grad_weight_T.transpose(0,1)
-    #need to truncate, can happen on odd dimensions
+    #need to truncate shape, can happen on odd dimensions
     grad_weight = grad_weight[..., :weight.shape[2], :weight.shape[3]]
 
-    grad_out_flat = grad_out.flatten(start_dim=2)
-    grad_bias     = grad_out_flat.sum(dim=[0,2])
+    grad_bias          = None
+    grad_bias_required = outmask[2]
+    if grad_bias_required:
+        grad_bias     = grad_out.sum(dim=[0,2,3])
 
     grad_input        = None
     grad_input_needed = outmask[0]
@@ -246,7 +310,8 @@ def manual_convolution_backward(
         flip_dims     = list(range(2, len(weight.shape)))
         weight_flip   = torch.flip(weight, dims=flip_dims)
         weight_flip_T = weight_flip.transpose(0,1)
-        padding_gi    = list(s-1 for s in weight.shape[2:])
+        #padding_gi    = list(s-1 for s in weight.shape[2:])
+        padding_gi    = list(s-p-1 for s,p in zip(weight.shape[2:], padding))
         grad_out_dil  = dilate(grad_out, dilation=stride)
         stride_gi     = [1,1]
         dilation_gi   = [1,1]
@@ -261,6 +326,8 @@ def manual_convolution_backward(
             outpadding, 
             groups,
         )
+        #need to truncate shape, can happen on odd dimensions
+        grad_input = grad_input[..., :input.shape[2], :input.shape[3]]
     return [grad_input, grad_weight, grad_bias]
 
 
@@ -419,24 +486,45 @@ def replace_all_squeeze_dims(gm:torch.fx.graph_module.GraphModule):
     graph.lint()
     gm.recompile()
 
-def replace_all_aten_threshold_backward(gm:torch.fx.graph_module.GraphModule):
+def replace_all_inplace_add(gm:torch.fx.graph_module.GraphModule):
     for node in gm.graph.nodes:
-        if node.target == torch.ops.aten.threshold_backward.default:
-            grad_output, _self, threshold = node.args
-            new_args = []
-            for argnode in node.args[:2]:
-                meta = argnode.meta['tensor_meta']
-                new_args += [torch.empty(meta.shape, dtype=meta.dtype)]
-            new_args += node.args[2:]
-            fx = make_fx(torch._decomp.decompositions.threshold_backward)(*new_args)
-            
-            node_map = { fxnode:gnode for fxnode,gnode in zip(fx.graph.nodes, node.args)}
+        if node.target == torch.ops.aten.add_.Tensor:
             with gm.graph.inserting_before(node):
-                newout = gm.graph.graph_copy(fx.graph, node_map, return_output_node=True)
-                node.replace_all_uses_with(newout[0])
+                new_node = gm.graph.call_function(torch.ops.aten.add, node.args, node.kwargs)
+                node.replace_all_uses_with(new_node)
             gm.graph.erase_node(node)
     gm.graph.lint()
     gm.recompile()
+
+def replace_all_inplace_mul(gm:torch.fx.graph_module.GraphModule):
+    for node in gm.graph.nodes:
+        if node.target == torch.ops.aten.mul_.Tensor:
+            with gm.graph.inserting_before(node):
+                new_node = gm.graph.call_function(torch.ops.aten.mul, node.args, node.kwargs)
+                node.replace_all_uses_with(new_node)
+            gm.graph.erase_node(node)
+    gm.graph.lint()
+    gm.recompile()
+
+
+# def replace_all_aten_threshold_backward(gm:torch.fx.graph_module.GraphModule):
+#     for node in gm.graph.nodes:
+#         if node.target == torch.ops.aten.threshold_backward.default:
+#             grad_output, _self, threshold = node.args
+#             new_args = []
+#             for argnode in node.args[:2]:
+#                 meta = argnode.meta['tensor_meta']
+#                 new_args += [torch.empty(meta.shape, dtype=meta.dtype)]
+#             new_args += node.args[2:]
+#             fx = make_fx(torch._decomp.decompositions.threshold_backward)(*new_args)
+            
+#             node_map = { fxnode:gnode for fxnode,gnode in zip(fx.graph.nodes, node.args)}
+#             with gm.graph.inserting_before(node):
+#                 newout = gm.graph.graph_copy(fx.graph, node_map, return_output_node=True)
+#                 node.replace_all_uses_with(newout[0])
+#             gm.graph.erase_node(node)
+#     gm.graph.lint()
+#     gm.recompile()
                 
 
 
@@ -457,5 +545,47 @@ def _early_exit(gm:torch.fx.graph_module.GraphModule, nodename:str):
     gm.recompile()
 
 
+def _return_all_nodes(gm:torch.fx.graph_module.GraphModule) -> torch.fx.graph_module.GraphModule:
+    '''Modify the return statement to additionally return all nodes. 
+       Input graph module must already return a dict.  (For debugging)'''
+    gm = copy.deepcopy(gm)
 
+    all_nodes = list(gm.graph.nodes)
+    last_node = all_nodes[-1]
+    all_but_last_nodes = all_nodes[:-1]
+    #nodes that return tuples currently dont work
+    all_but_last_no_tuples = []  # type: ignore
+    for n in all_but_last_nodes:
+        for user in n.users:
+            if user.target == operator.getitem:
+                break
+        else:
+            all_but_last_no_tuples.append(n)
+    #print(all_but_last_no_tuples)
+    #assert 0
+
+    debug_spec = torch.utils._pytree.TreeSpec(
+        type           = dict, 
+        context        = [str(n) for n in all_but_last_no_tuples], 
+        children_specs = [torch.utils._pytree.LeafSpec() for n in all_but_last_no_tuples]
+    )
+    old_info     = gm.graph._codegen.pytree_info  # type: ignore
+    old_out_spec = old_info.out_spec
+    new_out_spec = torch.utils._pytree.TreeSpec(
+        type           = dict,
+        context        = old_out_spec.context + ['debug'],
+        children_specs = old_out_spec.children_specs + [debug_spec],
+    )
+
+    gm._out_spec = new_out_spec
+    gm.graph._codegen.pytree_info = torch.fx.graph._PyTreeInfo( # type: ignore
+        old_info.orig_args, old_info.in_spec, new_out_spec
+    )
+
+    with gm.graph.inserting_before(last_node):
+        new_node = gm.graph.output(last_node.args[0] + all_but_last_no_tuples)
+    gm.graph.erase_node(last_node)
+    gm.graph.lint()
+    gm.recompile()
+    return gm
 
