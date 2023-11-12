@@ -40,6 +40,7 @@ def export_model_as_functional_training_onnx(
     m:         torch.nn.Module,
     loss_func: tp.Callable[[torch.Tensor, torch.Tensor], torch.Tensor],
     x:         torch.Tensor,
+    t:         torch.Tensor,
     _debug:    bool = False,
 ) -> ExportedONNX:
     sd = {k:v.clone() for k,v in dict(m.state_dict()).items()}
@@ -60,11 +61,11 @@ def export_model_as_functional_training_onnx(
 
     def train_step_0(
         sd: StateDict,
-        x:  torch.Tensor
+        x:  torch.Tensor,
+        t:  torch.Tensor,
     ) -> tp.Dict[str, torch.Tensor|TensorDict|StateDict]:
-        _t = 0 #TODO
         sd_grads, sd_nongrads = filter_nongrad_values(sd)
-        gradients, (loss, y)  = grad_f(sd_grads, sd_nongrads, x, _t)
+        gradients, (loss, y)  = grad_f(sd_grads, sd_nongrads, x, t)
         new_sd_grads, buffers = run_optimizer_init(gradients, sd_grads)
         new_sd: StateDict     = new_sd_grads | sd_nongrads
         return {
@@ -78,11 +79,11 @@ def export_model_as_functional_training_onnx(
     def train_step(
         sd:      StateDict,
         x:       torch.Tensor,
+        t:       torch.Tensor,
         buffers: TensorDict,
     ):
-        _t = 0 #TODO
         sd_grads, sd_nongrads = filter_nongrad_values(sd)
-        gradients, (loss, y)  = grad_f(sd_grads, sd_nongrads, x, _t)
+        gradients, (loss, y)  = grad_f(sd_grads, sd_nongrads, x, t)
         new_sd_grads, buffers = run_optimizer(gradients, sd_grads, buffers) # type: ignore
         new_sd: StateDict     = new_sd_grads | sd_nongrads
         return {
@@ -94,61 +95,73 @@ def export_model_as_functional_training_onnx(
         }
     
     decompositions = {
+        #torch.ops.aten.native_batch_norm.default: functional_aten_batch_norm,
+        torch.ops.aten.native_batch_norm.default:manual_batch_norm,
         torch.ops.aten.convolution_backward.default: manual_convolution_backward,
-        torch.ops.aten.max_pool2d_with_indices_backward.default: manual_max_pool2d_with_indices_backward,
+        torch.ops.aten.max_pool2d_with_indices_backward.default: 
+            manual_max_pool2d_with_indices_backward,
         torch.ops.aten.threshold_backward.default: threshold_backward,
-        torch.ops.aten.native_batch_norm_backward.default: torch._decomp.decompositions.native_batch_norm_backward,
+        torch.ops.aten.native_batch_norm_backward.default: 
+            torch._decomp.decompositions.native_batch_norm_backward,
         torch.ops.aten.var_mean.correction:var_mean_64,
-
+        torch.ops.aten.rsqrt.default: rsqrt_64,
+        # torch.ops.aten.nll_loss_forward.default: 
+        #     torch._decomp.decompositions.nll_loss_forward,
+        # torch.ops.aten.nll_loss_backward.default: 
+        #     torch._decomp.decompositions.nll_loss_backward,
+        torch.ops.aten.nll_loss_forward.default:  _nll_loss_forward,
+        torch.ops.aten.nll_loss_backward.default: _nll_loss_backward,
+        torch.ops.aten._log_softmax_backward_data.default:
+            torch._decomp.decompositions._log_softmax_backward_data,
     }
-    train_step_tx_0 = make_fx(train_step_0, tracing_mode='fake')(sd, x)
+    train_step_tx_0 = make_fx(train_step_0, tracing_mode='fake')(sd, x, t)
     rename_all_nodes(train_step_tx_0, prefix='main')
     replace_all_aten_sgn(train_step_tx_0)
+    replace_inplace_ops(train_step_tx_0, bn=False)
     replace_all_aten_native_batch_norm(train_step_tx_0)
-    replace_all_inplace_add(train_step_tx_0)
-    replace_all_inplace_mul(train_step_tx_0)
     for torch_op, manual_op in decompositions.items():
         replace_op_type_with_custom_function(train_step_tx_0, torch_op, manual_op)
+    cleanup_graph(train_step_tx_0)
+
     if _debug:
         train_step_tx_0 = _return_all_nodes(train_step_tx_0)
 
         #unmodified, i.e. no decompositions
-        train_step_tx_0_unmodified = make_fx(train_step_0, tracing_mode='fake')(sd, x)
+        train_step_tx_0_unmodified = make_fx(train_step_0, tracing_mode='fake')(sd, x, t)
         rename_all_nodes(train_step_tx_0_unmodified, prefix='main')
         #modified after all, removing inplace ops
-        replace_all_aten_native_batch_norm(train_step_tx_0_unmodified)
-        replace_all_inplace_add(train_step_tx_0_unmodified)
-        replace_all_inplace_mul(train_step_tx_0_unmodified)
+        replace_inplace_ops(train_step_tx_0_unmodified, bn=True)
+        cleanup_graph(train_step_tx_0_unmodified)
         train_step_tx_0_unmodified = _return_all_nodes(train_step_tx_0_unmodified)
 
 
-    _init_out = train_step_tx_0(sd, x)
+    _init_out = train_step_tx_0(sd, x, t)
     train_step_tx   = make_fx(train_step, tracing_mode='fake')(
-        sd, x, _init_out['buffers']
+        sd, x, t, _init_out['buffers']
     )
     rename_all_nodes(train_step_tx, prefix='main')
     replace_all_aten_sgn(train_step_tx)
+    replace_inplace_ops(train_step_tx, bn=False)
     replace_all_aten_native_batch_norm(train_step_tx)
-    replace_all_inplace_add(train_step_tx)
-    replace_all_inplace_mul(train_step_tx)
     for torch_op, manual_op in decompositions.items():
         replace_op_type_with_custom_function(train_step_tx, torch_op, manual_op)
+    cleanup_graph(train_step_tx)
+
     if _debug:
         train_step_tx = _return_all_nodes(train_step_tx)
 
         #unmodified, i.e. no decompositions
         train_step_tx_unmodified = make_fx(train_step, tracing_mode='fake')(
-            sd, x, _init_out['buffers']
+            sd, x, t, _init_out['buffers']
         )
         rename_all_nodes(train_step_tx_unmodified, prefix='main')
         #modified after all, removing inplace ops
-        replace_all_aten_native_batch_norm(train_step_tx_unmodified)
-        replace_all_inplace_add(train_step_tx_unmodified)
-        replace_all_inplace_mul(train_step_tx_unmodified)
+        replace_inplace_ops(train_step_tx_unmodified, bn=True)
+        cleanup_graph(train_step_tx_unmodified)
         train_step_tx_unmodified = _return_all_nodes(train_step_tx_unmodified)
 
 
-    inputnames_0  = list(sd.keys()) + ['x']
+    inputnames_0  = list(sd.keys()) + ['x'] + ['t']
     inputnames    = inputnames_0 + [f'{k}.buffer' for k in _init_out['buffers'].keys()]
     outputnames_0 = [f'{k}.output' for k in _init_out['state_dict'].keys()]         \
                   + [f'{k}.buffer.output' for k in _init_out['buffers'].keys()]     \
@@ -158,14 +171,14 @@ def export_model_as_functional_training_onnx(
     if _debug:
         outputnames_0 += [f'{k}.debug' for k in _init_out['debug'].keys()]
         
-        _2nd_out = train_step_tx_unmodified(sd, x, _init_out['buffers'])
+        _2nd_out = train_step_tx(sd, x, t, _init_out['buffers'])
         outputnames   += [f'{k}.debug' for k in _2nd_out['debug'].keys()]
 
 
     buf = io.BytesIO()
     torch.onnx.export(
         train_step_tx_0, 
-        {'sd':sd, 'x':x},
+        {'sd':sd, 'x':x, 't':t},
         buf, 
         training     = torch.onnx.TrainingMode.TRAINING,
         input_names  = inputnames_0, 
@@ -178,7 +191,7 @@ def export_model_as_functional_training_onnx(
     buf = io.BytesIO()
     torch.onnx.export(
         train_step_tx, 
-        {'sd':sd, 'x':x, 'buffers':_init_out['buffers']},
+        {'sd':sd, 'x':x, 't':t, 'buffers':_init_out['buffers']},
         buf, 
         training     = torch.onnx.TrainingMode.TRAINING,
         input_names  = inputnames, 
@@ -372,7 +385,11 @@ def var_mean_64(x:torch.Tensor, *a, **kw) -> tp.Tuple[torch.Tensor, torch.Tensor
     var, mean = var.to(torch.float32), mean.to(torch.float32)
     return var, mean
 
-
+def rsqrt_64(x:torch.Tensor, *a, **kw) -> torch.Tensor:
+    x = x.to(torch.float64)
+    x = torch.ops.aten.rsqrt.default(x, *a, **kw)
+    x = x.to(torch.float32)
+    return x
 
 def replace_op_type_with_custom_function(
     gm:              torch.fx.graph_module.GraphModule, 
@@ -416,53 +433,12 @@ def replace_all_aten_sgn(gm:torch.fx.graph_module.GraphModule):
     gm.recompile()
 
 
-def replace_all_aten_native_batch_norm_backward(gm:torch.fx.graph_module.GraphModule):
-    '''Replace all conv_backward nodes in a traced fx graph with equivalent operations,
-       because torch.onnx.export cannot handle it.
-    '''
-    graph:torch.fx.graph.Graph = gm.graph
-    for node in gm.graph.nodes:
-        if node.target == torch.ops.aten.native_batch_norm_backward.default:
-            replace_node_with_manual_batch_norm_backward(graph, node)
-    graph.lint()
-    gm.recompile()
-
 
 def find_node_in_graph(graph:torch.fx.graph.Graph, name:str) -> torch.fx.graph.Node|None:
     for node in graph.nodes:
         if node.name == name:
             return node
     return None
-
-
-def replace_node_with_manual_batch_norm_backward(
-    graph:torch.fx.graph.Graph, node:torch.fx.graph.Node
-):
-    #https://github.com/pytorch/pytorch/blob/a44f8894fa6d973693aab44a3dda079a168b05c1/torch/_decomp/decompositions.py#L1727
-    empty_args = []
-    for arg in node.args[:7]:
-        meta = arg.meta['tensor_meta']  # type: ignore
-        empty_args.append(
-            torch.empty(meta.shape, dtype=meta.dtype)
-        )
-    new_args = empty_args + list(node.args[7:])
-    fx = make_fx(torch._decomp.decompositions.native_batch_norm_backward)(*new_args)
-    
-    node_map = { fxnode:gnode for fxnode,gnode in zip(fx.graph.nodes, node.args)}
-    node_map[find_node_in_graph(fx.graph, 'output_mask_1')] = node.args[-1][0] # type: ignore
-    node_map[find_node_in_graph(fx.graph, 'output_mask_2')] = node.args[-1][1] # type: ignore
-    node_map[find_node_in_graph(fx.graph, 'output_mask_3')] = node.args[-1][2] # type: ignore
-    with graph.inserting_before(node):
-        out = graph.graph_copy(fx.graph, node_map, return_output_node=True)
-        fx_outputs  = list(fx.graph.nodes)[-1].args[0]
-        new_outputs = tuple(node_map[n] for n in fx_outputs)
-        tuple_op = graph.call_function(tuple, args=(new_outputs,))
-        node.replace_all_uses_with(tuple_op)
-    graph.erase_node(node)
-    
-    graph.lint()
-    graph.owning_module.recompile()
-
 
 def replace_all_aten_native_batch_norm(gm:torch.fx.graph_module.GraphModule):
     '''Replace all aten_native_batch_norm nodes in a traced fx graph with aten_batch_norm'''
@@ -473,8 +449,7 @@ def replace_all_aten_native_batch_norm(gm:torch.fx.graph_module.GraphModule):
     graph.lint()
     gm.recompile()
 
-    replace_all_squeeze_dims(gm)
-
+    #replace_all_squeeze_dims(gm)
 
 def replace_node_with_aten_native_batch_norm(
     graph:torch.fx.graph.Graph, node:torch.fx.graph.Node
@@ -488,10 +463,14 @@ def replace_node_with_aten_native_batch_norm(
         )
     new_args = empty_args + list(node.args[5:])
     new_args += [True]  #functional = True
-    fx = make_fx(torch._decomp.decompositions.native_batch_norm_helper)(*new_args)
+    fx = make_fx(
+        #torch._decomp.decompositions.native_batch_norm_helper, tracing_mode='fake'
+        manual_batch_norm, tracing_mode='fake'
+    )(*new_args)
     fx.graph.erase_node(
         find_node_in_graph(fx.graph, 'functional_1')
     )
+    rename_all_nodes(fx, prefix='bn')
 
     node_map = { fxnode:gnode for fxnode,gnode in zip(fx.graph.nodes, node.args)}
     with graph.inserting_before(node):
@@ -520,6 +499,167 @@ def replace_node_with_aten_native_batch_norm(
     graph.lint()
     graph.owning_module.recompile()
 
+def functional_batch_norm(*a, **kw):
+    kw = kw | {'functional': True}
+    return torch._decomp.decompositions.native_batch_norm_helper(*a, **kw)
+
+def functional_aten_batch_norm(x, w, b, rm, rv, training, momentum, eps):
+    rmclone = rm *1.0 #.clone()
+    rvclone = rv *1.0 #.clone()
+    y = torch.ops.aten.batch_norm(
+        x, w, b, rmclone, rvclone, training, momentum, eps, cudnn_enabled=False
+    )
+    
+    #https://github.com/pytorch/pytorch/blob/a44f8894fa6d973693aab44a3dda079a168b05c1/torch/_decomp/decompositions.py#L1402
+    reduction_dims = [0] + list(range(2, x.dim()))
+    biased_var, mean = torch.var_mean(
+        x.to(torch.float64), dim=reduction_dims, correction=0, keepdim=True
+    )
+    rstd = torch.rsqrt(biased_var + eps)
+    save_mean = torch.squeeze(mean, reduction_dims)
+    save_rstd = torch.squeeze(rstd, reduction_dims)
+    return (y, save_mean, save_rstd, rmclone, rvclone)
+
+
+def functional_batch_norm_64(
+    x:torch.Tensor, w:torch.Tensor, b:torch.Tensor, rm:torch.Tensor, rv:torch.Tensor, *a, **kw
+):
+    torch.ops.aten.batch_norm()
+    kw = kw | {'functional': True}
+    x  = x.to(torch.float64)
+    w  = w.to(torch.float64)
+    b  = b.to(torch.float64)
+    rm = rm.to(torch.float64)
+    rv = rv.to(torch.float64)
+    outputs = torch._decomp.decompositions.native_batch_norm_helper(x, w, b, rm, rv, *a, **kw)
+    outputs = [o.to(torch.float32) for o in outputs] # type: ignore
+    return outputs
+
+
+def manual_batch_norm(
+    input:        torch.Tensor,
+    weight:       torch.Tensor,
+    bias:         torch.Tensor,
+    running_mean: torch.Tensor,
+    running_var:  torch.Tensor,
+    training:     bool,
+    momentum:     float,
+    eps:          float,
+    functional:   bool,
+) -> tp.Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    #https://github.com/pytorch/pytorch/blob/dadca7aeec7caac385bafe13cc2d2d434517eb4b/torch/_decomp/decompositions.py#L1591
+    #modifications: not using rsqrt to compute output for more numerical stability
+    assert training
+    assert functional
+    reduction_dims    = [0] + list(range(2, input.dim()))
+    computation_dtype = torch.float32
+
+    input_acc = input.to(dtype=computation_dtype)
+    biased_var, mean = torch.var_mean(
+        input_acc, dim=reduction_dims, correction=0, keepdim=True
+    )
+    biased_var_plus_eps = biased_var + eps
+    rstd = torch.rsqrt(biased_var_plus_eps)
+    std  = torch.sqrt(biased_var_plus_eps)
+
+    output = (input - mean) / std
+
+    save_mean = torch.squeeze(mean, reduction_dims)
+    save_rstd = torch.squeeze(rstd, reduction_dims)
+    if running_mean is not None:
+        new_running_mean = momentum * save_mean + (1 - momentum) * running_mean
+    if running_var is not None:
+        n = input.numel() / input.shape[1]
+        squeezed_var = torch.squeeze(biased_var, reduction_dims)
+        unbiased_var = squeezed_var * (n / (n - 1))
+        new_running_var = momentum * unbiased_var + (1 - momentum) * running_var
+    
+    if weight is not None:
+        weight = weight.flatten()
+        weight = _unsqueeze_to_dim(weight, input.dim() - 1)
+        output = output * weight
+
+    if bias is not None:
+        bias = bias.flatten()
+        bias = _unsqueeze_to_dim(bias, input.dim() - 1)
+        output = output + bias
+    
+    return (
+        output.to(dtype=input.dtype),
+        save_mean,
+        save_rstd,
+        new_running_mean,
+        new_running_var,
+    )
+
+
+def _unsqueeze_to_dim(x: torch.Tensor, dim: int) -> torch.Tensor:
+    #https://github.com/pytorch/pytorch/blob/dadca7aeec7caac385bafe13cc2d2d434517eb4b/torch/_decomp/decompositions.py#L95
+    for _ in range(dim - x.dim()):
+        x = x.unsqueeze(-1)
+    return x
+            
+
+
+
+
+
+def replace_inplace_ops(gm:torch.fx.graph_module.GraphModule, bn:bool=False):
+    decompositions = {
+        torch.ops.aten.add_.Tensor: torch.ops.aten.add,
+        torch.ops.aten.mul_.Tensor: torch.ops.aten.mul,
+    }
+    if bn:
+        decompositions[torch.ops.aten.native_batch_norm.default] = functional_batch_norm
+    for torch_op, manual_op in decompositions.items():
+        replace_op_type_with_custom_function(gm, torch_op, manual_op)
+    
+    #replace the first (!) occurrence of running mean/var in the output list for each batchnorm
+    #because not inplace anymore
+    outputnode = list(gm.graph.nodes)[-1]
+    for node in gm.graph.nodes:
+        if node.target in ['functional_batch_norm', 'functional_batch_norm_64']:
+            with gm.graph.inserting_after(node):
+                old_running_mean  = node.args[3]
+                old_running_var   = node.args[4]
+                new_running_mean  = gm.graph.call_function(operator.getitem, (node, 3))
+                new_running_var   = gm.graph.call_function(operator.getitem, (node, 4))
+            
+            outputlist = list(outputnode.args[0])
+            if old_running_mean in outputlist:
+                outputlist[outputlist.index(old_running_mean)] = new_running_mean
+            if old_running_var in outputlist:
+                outputlist[outputlist.index(old_running_var)] = new_running_var
+            new_outputnode = gm.graph.output(outputlist)
+            outputnode.replace_all_uses_with(new_outputnode)
+            gm.graph.erase_node(outputnode)
+    gm.graph.lint()
+    gm.recompile()
+
+
+def fixed_squeeze(g, x:torch.Value, dim:torch.Value|None = None):
+    if dim is None:
+        return g.op('Squeeze', x)
+    
+    dims_to_squeeze = dim.node().t('value').long()
+    if dims_to_squeeze.ndim == 0:
+        dims_to_squeeze = dims_to_squeeze[None]
+    return g.op("Squeeze", x, g.op("Constant", value_t=dims_to_squeeze))
+
+torch.onnx.register_custom_op_symbolic('::squeeze', fixed_squeeze, opset_version=11)
+
+
+def cleanup_graph(gm:torch.fx.graph_module.GraphModule):
+    '''Remove torch.ops.aten.clone, and torch.ops.aten.detach ops'''
+    for node in gm.graph.nodes:
+        if node.target in [torch.ops.aten.clone.default, torch.ops.aten.detach.default]:
+            assert len(node.args) == 1
+            inputnode = node.args[0]
+            node.replace_all_uses_with(inputnode)
+            gm.graph.erase_node(node)
+    gm.graph.lint()
+    gm.recompile()
+
 
 def replace_all_squeeze_dims(gm:torch.fx.graph_module.GraphModule):
     graph:torch.fx.graph.Graph = gm.graph
@@ -531,35 +671,121 @@ def replace_all_squeeze_dims(gm:torch.fx.graph_module.GraphModule):
                 new_shape = [shape[i] for i in range(len(shape)) if shape[i] > 1 or i not in dims ]
                 #new_squeeze = graph.call_function(torch.ops.aten.squeeze, (node.args[0], ))
                 new_squeeze = graph.call_function(torch.reshape, (tensor, new_shape))
+                new_squeeze.name = node.name
                 node.replace_all_uses_with(new_squeeze)
             graph.erase_node(node)
     graph.lint()
     gm.recompile()
 
-def replace_all_inplace_add(gm:torch.fx.graph_module.GraphModule):
-    for node in gm.graph.nodes:
-        if node.target == torch.ops.aten.add_.Tensor:
-            with gm.graph.inserting_before(node):
-                new_node = gm.graph.call_function(torch.ops.aten.add, node.args, node.kwargs)
-                node.replace_all_uses_with(new_node)
-            gm.graph.erase_node(node)
-    gm.graph.lint()
-    gm.recompile()
-
-def replace_all_inplace_mul(gm:torch.fx.graph_module.GraphModule):
-    for node in gm.graph.nodes:
-        if node.target == torch.ops.aten.mul_.Tensor:
-            with gm.graph.inserting_before(node):
-                new_node = gm.graph.call_function(torch.ops.aten.mul, node.args, node.kwargs)
-                node.replace_all_uses_with(new_node)
-            gm.graph.erase_node(node)
-    gm.graph.lint()
-    gm.recompile()
-
-
 def rename_all_nodes(gm:torch.fx.graph_module.GraphModule, prefix:str):
     for node in gm.graph.nodes:
         node.name = f'{prefix}.{node.name}'
+
+
+
+Tensor = torch.Tensor
+from enum import Enum
+
+class Reduction(Enum):
+    NONE = 0
+    MEAN = 1
+    SUM = 2
+
+
+def _nll_loss_forward(
+    self: Tensor,
+    target: Tensor,
+    weight: tp.Optional[Tensor],
+    reduction: int,
+    ignore_index: int,
+) -> tp.Tuple[Tensor, Tensor]:
+    #https://github.com/pytorch/pytorch/blob/7ea184d7e33369610492ff0936369ea00f2b3580/torch/_decomp/decompositions.py#L3269C1-L3319C32
+    # self can be [N, C] or [C]
+    # target can be [N] or []
+
+    n_dims = self.dim()
+    channel_dim = 1
+    if n_dims < 2:
+        channel_dim = 0
+
+    if weight is not None:
+        if n_dims > 1:
+            shape = [
+                1,
+            ] * n_dims
+            shape[channel_dim] = weight.shape[0]
+            w = weight.view(shape)
+        else:
+            w = weight
+        self = self * w
+    safe_target = torch.where(target != ignore_index, target, 0)
+    safe_target_ = safe_target.unsqueeze(channel_dim)
+    # target can be [N, 1] or [1]
+
+    result = -torch.gather(self, channel_dim, safe_target_).squeeze(channel_dim)
+
+    #result = torch.where(target != ignore_index, result, 0)
+    result = torch.where(
+        target != ignore_index, result, torch.as_tensor(0, dtype=torch.float32)
+    )
+
+    if reduction == Reduction.NONE.value and n_dims > 1:
+        total_weight = self.new_full((), 0.0)
+        return result, total_weight
+
+    if weight is not None:
+        w = w.expand(self.shape)
+        wsum = torch.gather(w, channel_dim, safe_target_).squeeze(channel_dim)
+        #wsum = torch.where(target != ignore_index, wsum, 0)
+        wsum = torch.where(
+            target != ignore_index, wsum, torch.as_tensor(0, dtype=torch.float32)
+        )
+        total_weight = wsum.sum()
+    else:
+        total_weight = (target != ignore_index).sum().to(self)
+
+    if reduction == Reduction.SUM.value:
+        result = result.sum()
+    elif reduction == Reduction.MEAN.value:
+        result = result.sum() / total_weight
+
+    return result, total_weight
+
+def _nll_loss_backward(
+    grad_output: Tensor,
+    self: Tensor,
+    target: Tensor,
+    weight: tp.Optional[Tensor],
+    reduction: int,
+    ignore_index: int,
+    total_weight: Tensor,
+) -> Tensor:
+    #https://github.com/pytorch/pytorch/blob/7ea184d7e33369610492ff0936369ea00f2b3580/torch/_decomp/decompositions.py#L488C1-L517C36
+    channel_dim = 0 if self.dim() < 2 else 1
+    if reduction == Reduction.MEAN.value:
+        grad_output = grad_output / total_weight
+
+    target = target.unsqueeze(channel_dim)
+    safe_target = torch.where(target != ignore_index, target, 0)
+    grad_input = torch.zeros_like(self)
+    grad_input = torch.scatter(grad_input, channel_dim, safe_target, -1.0)
+
+    if grad_input.dim() > grad_output.dim() > 0:
+        grad_output = grad_output.unsqueeze(channel_dim)
+
+    if weight is not None:
+        new_shape = [1 for _ in range(self.dim())]
+        new_shape[channel_dim] = weight.shape[0]
+        weight = weight.reshape(new_shape)
+        grad_output = grad_output * weight
+
+    #grad_output = torch.where(target != ignore_index, grad_output, 0)
+    grad_output = torch.where(
+        target != ignore_index, grad_output, torch.as_tensor(0, dtype=torch.float32)
+    )
+
+    return grad_input * grad_output
+
 
 def _return_all_nodes(gm:torch.fx.graph_module.GraphModule) -> torch.fx.graph_module.GraphModule:
     '''Modify the return statement to additionally return all nodes. 
