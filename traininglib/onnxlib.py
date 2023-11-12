@@ -96,19 +96,25 @@ def export_model_as_functional_training_onnx(
     decompositions = {
         torch.ops.aten.convolution_backward.default: manual_convolution_backward,
         torch.ops.aten.max_pool2d_with_indices_backward.default: manual_max_pool2d_with_indices_backward,
-        torch.ops.aten.threshold_backward.default: torch._decomp.decompositions.threshold_backward,
+        torch.ops.aten.threshold_backward.default: threshold_backward,
+        torch.ops.aten.native_batch_norm_backward.default: torch._decomp.decompositions.native_batch_norm_backward,
+        torch.ops.aten.var_mean.correction:var_mean_64,
+
     }
-    train_step_tx_0 = make_fx(train_step_0, decompositions, tracing_mode='fake')(sd, x)
+    train_step_tx_0 = make_fx(train_step_0, tracing_mode='fake')(sd, x)
+    rename_all_nodes(train_step_tx_0, prefix='main')
     replace_all_aten_sgn(train_step_tx_0)
     replace_all_aten_native_batch_norm(train_step_tx_0)
-    replace_all_aten_native_batch_norm_backward(train_step_tx_0)
     replace_all_inplace_add(train_step_tx_0)
     replace_all_inplace_mul(train_step_tx_0)
+    for torch_op, manual_op in decompositions.items():
+        replace_op_type_with_custom_function(train_step_tx_0, torch_op, manual_op)
     if _debug:
         train_step_tx_0 = _return_all_nodes(train_step_tx_0)
 
         #unmodified, i.e. no decompositions
         train_step_tx_0_unmodified = make_fx(train_step_0, tracing_mode='fake')(sd, x)
+        rename_all_nodes(train_step_tx_0_unmodified, prefix='main')
         #modified after all, removing inplace ops
         replace_all_aten_native_batch_norm(train_step_tx_0_unmodified)
         replace_all_inplace_add(train_step_tx_0_unmodified)
@@ -117,14 +123,16 @@ def export_model_as_functional_training_onnx(
 
 
     _init_out = train_step_tx_0(sd, x)
-    train_step_tx   = make_fx(
-        train_step, decompositions, tracing_mode='fake'
-    )(sd, x, _init_out['buffers'])
+    train_step_tx   = make_fx(train_step, tracing_mode='fake')(
+        sd, x, _init_out['buffers']
+    )
+    rename_all_nodes(train_step_tx, prefix='main')
     replace_all_aten_sgn(train_step_tx)
     replace_all_aten_native_batch_norm(train_step_tx)
-    replace_all_aten_native_batch_norm_backward(train_step_tx)
     replace_all_inplace_add(train_step_tx)
     replace_all_inplace_mul(train_step_tx)
+    for torch_op, manual_op in decompositions.items():
+        replace_op_type_with_custom_function(train_step_tx, torch_op, manual_op)
     if _debug:
         train_step_tx = _return_all_nodes(train_step_tx)
 
@@ -132,6 +140,7 @@ def export_model_as_functional_training_onnx(
         train_step_tx_unmodified = make_fx(train_step, tracing_mode='fake')(
             sd, x, _init_out['buffers']
         )
+        rename_all_nodes(train_step_tx_unmodified, prefix='main')
         #modified after all, removing inplace ops
         replace_all_aten_native_batch_norm(train_step_tx_unmodified)
         replace_all_inplace_add(train_step_tx_unmodified)
@@ -300,7 +309,7 @@ def manual_convolution_backward(
     grad_bias          = None
     grad_bias_required = outmask[2]
     if grad_bias_required:
-        grad_bias     = grad_out.sum(dim=[0,2,3])
+        grad_bias     = grad_out.to(torch.float64).sum(dim=[0,2,3]).to(torch.float32)
 
     grad_input        = None
     grad_input_needed = outmask[0]
@@ -310,7 +319,6 @@ def manual_convolution_backward(
         flip_dims     = list(range(2, len(weight.shape)))
         weight_flip   = torch.flip(weight, dims=flip_dims)
         weight_flip_T = weight_flip.transpose(0,1)
-        #padding_gi    = list(s-1 for s in weight.shape[2:])
         padding_gi    = list(s-p-1 for s,p in zip(weight.shape[2:], padding))
         grad_out_dil  = dilate(grad_out, dilation=stride)
         stride_gi     = [1,1]
@@ -347,8 +355,50 @@ def manual_max_pool2d_with_indices_backward(
     z = torch.zeros_like(input.reshape(intermediate_shape))
     grad_output = grad_output.reshape(intermediate_shape)
     indices     = indices.reshape(intermediate_shape)
-    output      = torch.scatter(z, 2, indices, grad_output)
+    output      = torch.scatter_add(z, 2, indices, grad_output)
     return output.reshape(input.shape)
+
+
+def threshold_backward(grad_output:torch.Tensor, self:torch.Tensor, threshold:float):
+    #https://github.com/pytorch/pytorch/blob/fe5d8850e27d98439166c76ccc5e167fd3960df8/torch/_decomp/decompositions.py#L211C1-L212C58
+    #equivalent to the link above, except that using torch.tensor(0.0, dtype=torch.float32)
+    #onnx complained
+    return torch.where(self <= threshold, torch.tensor(0.0, dtype=torch.float32), grad_output)
+
+def var_mean_64(x:torch.Tensor, *a, **kw) -> tp.Tuple[torch.Tensor, torch.Tensor]:
+    '''Explicitly convert input to float64. Torch does it internally, ONNX doesnt.'''
+    x = x.to(torch.float64)
+    var, mean = torch.var_mean(x, *a, **kw)
+    var, mean = var.to(torch.float32), mean.to(torch.float32)
+    return var, mean
+
+
+
+def replace_op_type_with_custom_function(
+    gm:              torch.fx.graph_module.GraphModule, 
+    optype:          tp.Callable, 
+    custom_function: tp.Callable,
+    reuse_name:      bool = True
+):
+    '''Register `custom_function` as a submodule in the traced graph module 
+       and replace all `optype` calls with it. '''
+    class custom_module(torch.nn.Module):
+        def forward(self, *a, **kw):
+            return custom_function(*a, **kw)
+    modulename = custom_function.__name__
+    custom_module.__name__ = modulename
+
+    gm.add_submodule(modulename, custom_module())
+    for node in gm.graph.nodes:
+        if node.target == optype:
+            with gm.graph.inserting_before(node):
+                new_node = gm.graph.call_module(modulename, node.args, node.kwargs)
+            node.replace_all_uses_with(new_node)
+            gm.graph.erase_node(node)
+            if reuse_name:
+                new_node.name = node.name
+    gm.graph.lint()
+    gm.recompile()
 
 
 def replace_all_aten_sgn(gm:torch.fx.graph_module.GraphModule):
@@ -507,43 +557,9 @@ def replace_all_inplace_mul(gm:torch.fx.graph_module.GraphModule):
     gm.recompile()
 
 
-# def replace_all_aten_threshold_backward(gm:torch.fx.graph_module.GraphModule):
-#     for node in gm.graph.nodes:
-#         if node.target == torch.ops.aten.threshold_backward.default:
-#             grad_output, _self, threshold = node.args
-#             new_args = []
-#             for argnode in node.args[:2]:
-#                 meta = argnode.meta['tensor_meta']
-#                 new_args += [torch.empty(meta.shape, dtype=meta.dtype)]
-#             new_args += node.args[2:]
-#             fx = make_fx(torch._decomp.decompositions.threshold_backward)(*new_args)
-            
-#             node_map = { fxnode:gnode for fxnode,gnode in zip(fx.graph.nodes, node.args)}
-#             with gm.graph.inserting_before(node):
-#                 newout = gm.graph.graph_copy(fx.graph, node_map, return_output_node=True)
-#                 node.replace_all_uses_with(newout[0])
-#             gm.graph.erase_node(node)
-#     gm.graph.lint()
-#     gm.recompile()
-                
-
-
-def _early_exit(gm:torch.fx.graph_module.GraphModule, nodename:str):
-    '''Create a return statement after a node with specified name and return the node
-       (For debugging)'''
-    n_leaves = gm._out_spec.num_leaves  # type: ignore
-    graph:torch.fx.graph.Graph = gm.graph
-    for i,node in enumerate(gm.graph.nodes):
-        if node.name == nodename:
-            with graph.inserting_after(node):
-                new_node = graph.output([node]+[node.args]+[None]*(n_leaves-2))
-            break
-    #remove all following nodes
-    for node in reversed(list(gm.graph.nodes)[i+2:]):
-        graph.erase_node(node)
-    graph.lint()
-    gm.recompile()
-
+def rename_all_nodes(gm:torch.fx.graph_module.GraphModule, prefix:str):
+    for node in gm.graph.nodes:
+        node.name = f'{prefix}.{node.name}'
 
 def _return_all_nodes(gm:torch.fx.graph_module.GraphModule) -> torch.fx.graph_module.GraphModule:
     '''Modify the return statement to additionally return all nodes. 
@@ -561,8 +577,8 @@ def _return_all_nodes(gm:torch.fx.graph_module.GraphModule) -> torch.fx.graph_mo
                 break
         else:
             all_but_last_no_tuples.append(n)
-    #print(all_but_last_no_tuples)
-    #assert 0
+    #also filter out unused nodes (discarded by onnx and lead to issues)
+    all_but_last_no_tuples = [n for n in all_but_last_no_tuples if len(n.users) > 0]
 
     debug_spec = torch.utils._pytree.TreeSpec(
         type           = dict, 

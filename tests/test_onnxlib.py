@@ -10,7 +10,7 @@ class MiniResNet(torch.nn.Sequential):
     def __init__(self):
         super().__init__(
             torch.nn.Conv2d(3,8, kernel_size=(7,7), stride=(2,2), padding=(3,3), bias=False),
-            #torch.nn.BatchNorm2d(8),
+            torch.nn.BatchNorm2d(8),
             torch.nn.ReLU(inplace=True),
             torch.nn.MaxPool2d(kernel_size=3, stride=2, padding=1, dilation=1, ceil_mode=False),
             torch.nn.AdaptiveAvgPool2d((1,1)),
