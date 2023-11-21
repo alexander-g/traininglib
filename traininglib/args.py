@@ -8,6 +8,7 @@ def base_training_argparser() -> argparse.ArgumentParser:
     parser.add_argument('--inputsize', type=int,   default=512,  help='Default: 512px')
     parser.add_argument('--lr',        type=float, default=1e-3, help='Default: 1e-3')
     parser.add_argument('--epochs',    type=int,   default=30,   help='Default: 30')
+    parser.add_argument('--batchsize', type=int,   default=8,    help='Default: 8')
     parser.add_argument(
         '--checkpointdir', 
         type    = time.strftime, 
