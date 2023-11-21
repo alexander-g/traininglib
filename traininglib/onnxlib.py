@@ -278,14 +278,20 @@ def dilate(x:torch.Tensor, dilation:tp.Tuple[int,int]) -> torch.Tensor:
     indices = torch.arange(W)*2
     indices = indices.reshape(1,1,1,-1)
     indices = indices.expand(B,C,W,-1)
-    b = torch.zeros([B,C,H,W*2])
-    b = torch.scatter(b, 3, indices, x)
+    #NOTE: not using zeros() because it would be interpreted as a constant 
+    #and stored directly in onnx, blowing up the file size
+    #b = torch.zeros([B,C,H,W*2])
+    z = torch.cat([x,x], dim=-1) * 0.0
+    b = torch.scatter(z, 3, indices, x)
 
     indices = torch.arange(H)*2
     indices = indices.reshape(1,1,-1,1)
     indices = indices.expand(B,C,-1,W*2)
-    c = torch.zeros([B,C,H*2,W*2])
-    c = torch.scatter(c, 2, indices, b)
+    #NOTE: not using zeros() because it would be interpreted as a constant 
+    #and stored directly in onnx, blowing up the file size
+    #c = torch.zeros([B,C,H*2,W*2])
+    z = torch.cat([z,z], dim=-2) * 0.0
+    c = torch.scatter(z, 2, indices, b)
 
     return c
 
@@ -365,7 +371,10 @@ def manual_max_pool2d_with_indices_backward(
     '''Manual implementation of torch.ops.aten.max_pool2d_with_indices_backward.
        Can be exported to ONNX.'''
     intermediate_shape = input.shape[:2] + (-1,)
-    z = torch.zeros_like(input.reshape(intermediate_shape))
+    #NOTE: not using zeros_like() because it would be interpreted as a constant 
+    #and stored directly in onnx, blowing up the file size
+    #z = torch.zeros_like(input.reshape(intermediate_shape))
+    z = input.reshape(intermediate_shape) * 0.0
     grad_output = grad_output.reshape(intermediate_shape)
     indices     = indices.reshape(intermediate_shape)
     output      = torch.scatter_add(z, 2, indices, grad_output)
@@ -767,7 +776,10 @@ def _nll_loss_backward(
 
     target = target.unsqueeze(channel_dim)
     safe_target = torch.where(target != ignore_index, target, 0)
-    grad_input = torch.zeros_like(self)
+    #NOTE: not using zeros_like() because it would be interpreted as a constant 
+    #and stored directly in onnx, blowing up the file size
+    #grad_input = torch.zeros_like(self)
+    grad_input = self * 0.0
     grad_input = torch.scatter(grad_input, channel_dim, safe_target, -1.0)
 
     if grad_input.dim() > grad_output.dim() > 0:
