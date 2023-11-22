@@ -2,8 +2,8 @@ import typing as tp
 import numpy as np
 import torch, torchvision
 
-from .trainingtask import TrainingTask
-from .datalib import random_crop, random_rotate_flip, Color, convert_rgb_to_mask
+from ..trainingtask import TrainingTask
+from ..datalib import random_crop, random_rotate_flip, Color, convert_rgb_to_mask
 
 SegmentationBatch = tp.Tuple[torch.Tensor, torch.Tensor]
 
@@ -15,6 +15,7 @@ class SegmentationTask(TrainingTask):
         colors:         tp.List[Color],
         ignore_colors:  tp.List[Color]|None    = None,
         cropfactors:    tp.Tuple[float, float] = (0.75, 1.33),
+        pos_weight:     float                  = 1.0,
         **kw
     ):
         assert len(colors) == 1, NotImplementedError('TODO: implement multiclass training')
@@ -23,6 +24,7 @@ class SegmentationTask(TrainingTask):
         self.cropfactors   = cropfactors
         self.colors        = colors
         self.ignore_colors = ignore_colors
+        self.pos_weight    = torch.as_tensor(pos_weight, dtype=torch.float32)
     
     def training_step(self, batch:SegmentationBatch) -> tp.Tuple[torch.Tensor, tp.Dict]:
         x,t     = batch
@@ -40,7 +42,9 @@ class SegmentationTask(TrainingTask):
         
         y       = self.basemodule(x)
         t       = t.to(y.device)
-        loss    = torch.nn.functional.binary_cross_entropy_with_logits(y, t, weight)
+        loss    = torch.nn.functional.binary_cross_entropy_with_logits(
+            y, t, weight, pos_weight=self.pos_weight.to(y.device)
+        )
         logs    = {'loss': float(loss)}
         return loss, logs
     

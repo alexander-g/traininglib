@@ -43,7 +43,7 @@ class TrainingTask(torch.nn.Module):
         assert warmup_epochs >= 0
 
         optim = torch.optim.AdamW(self.parameters(), lr=self.lr)
-        schedulers = []
+        schedulers:tp.List[torch.optim.lr_scheduler.LRScheduler] = []
 
         if warmup_epochs > 0:
             schedulers.append(
@@ -160,8 +160,6 @@ class TrainingTask(torch.nn.Module):
                         self.basemodule.save(f"{checkpoint_dir}/best.pt.zip")
                         best_loss = validation_loss
 
-                metrics = {k: np.nanmean(v) for k, v in callback.logs.items()}
-
                 callback.on_epoch_end(e)
 
         #except (Exception, KeyboardInterrupt) as e:
@@ -173,6 +171,9 @@ class TrainingTask(torch.nn.Module):
             self.eval().cpu().requires_grad_(False)
             torch.cuda.empty_cache()
         return None
+
+
+    stop_requested:bool = False
 
     # XXX: class method to avoid boilerplate code
     @classmethod

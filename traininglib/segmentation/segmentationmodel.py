@@ -78,40 +78,27 @@ class SegmentationModel(BaseModel):
             rgb         = classmap_to_rgb(classmap, colors),
         )
     
-    def start_training(  # type: ignore [override]
+    def start_training(
         self,
         trainsplit: tp.List[tp.Tuple[str,str]],
         *,
-        ds_kw:      tp.Dict[str, tp.Any]        = {},
-        task_kw:    tp.Dict[str, tp.Any]        = {},
-        **kw,
-        # ld_kw:      tp.Dict[str, tp.Any]        = {},
-        # task_kw:    tp.Dict[str, tp.Any]        = {},
-        # fit_kw:     tp.Dict[str, tp.Any]        = {},
+        ds_kw:        tp.Dict[str, tp.Any]        = {},
+        ld_kw:        tp.Dict[str, tp.Any]        = {},
+        task_kw:      tp.Dict[str, tp.Any]        = {},
+        fit_kw:       tp.Dict[str, tp.Any]        = {},
     ):
         colors  = [c.color for c in self.classes]
         task_kw = {'colors': colors, 'patchsize':self.inputsize} | task_kw
         ds_kw   = {'patchsize':self.inputsize*2 if self.patchify else None} | ds_kw
-        return super().start_training(
+        return super()._start_training(
             trainsplit, 
             SegmentationDataset, 
             SegmentationTask, 
             task_kw = task_kw, 
             ds_kw   = ds_kw, 
-            **kw
+            ld_kw   = ld_kw,
+            fit_kw  = fit_kw
         )
-
-        # assert len(trainsplit) > 0
-        # ds    = SegmentationDataset(trainsplit, patchsize=self.inputsize*2, **ds_kw)
-        # ld_kw = {'batch_size':4} | ld_kw
-        # ld    = datalib.create_dataloader(ds, shuffle=True, **ld_kw)
-        # print(f"Training on {len(ds)} images / {len(ld)} batches.")
-        # colors = [c.color for c in self.classes]
-        # ignore_colors = [(127,127,127)]
-        # task  = SegmentationTask(
-        #     self, patchsize=self.inputsize, colors=colors, ignore_colors=ignore_colors, **task_kw
-        # )
-        # return task.fit(ld, **fit_kw)
 
 def classmap_to_rgb(classmap:np.ndarray, colors:tp.List[Color]) -> np.ndarray:
     assert len(classmap.shape) == 2

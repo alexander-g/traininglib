@@ -1,5 +1,7 @@
 import typing as tp
 import time, os, sys
+import argparse
+
 import numpy as np
 import torch, torchvision
 
@@ -101,23 +103,69 @@ class BaseModel(torch.nn.Module):
             # pe.save_text('model', 'class_list.txt', '\n'.join(self.class_list))
         return destination
     
-    def start_training(
+    def _start_training(
         self,
         trainsplit:   tp.List[tp.Any],
         DatasetClass: tp.Type,
         TrainingTask: tp.Type,
+        *,
         ds_kw:        tp.Dict[str, tp.Any]        = {},
         ld_kw:        tp.Dict[str, tp.Any]        = {},
         task_kw:      tp.Dict[str, tp.Any]        = {},
         fit_kw:       tp.Dict[str, tp.Any]        = {},
     ):
+        '''Internal method to start a training session.'''
         assert len(trainsplit) > 0
         ds    = DatasetClass(trainsplit, **ds_kw)
-        ld_kw = {'batch_size':4} | ld_kw
+        ld_kw = {'batch_size':8} | ld_kw
         ld    = datalib.create_dataloader(ds, shuffle=True, **ld_kw)
         print(f"Training on {len(ds)} images / {len(ld)} batches.")
         task  = TrainingTask(self, **task_kw)
         return task.fit(ld, **fit_kw)
+    
+    def start_training(
+        self,
+        trainsplit: tp.List[tp.Any],
+        *,
+        ds_kw:      tp.Dict[str, tp.Any] = {},
+        ld_kw:      tp.Dict[str, tp.Any] = {},
+        task_kw:    tp.Dict[str, tp.Any] = {},
+        fit_kw:     tp.Dict[str, tp.Any] = {},
+    ):
+        '''Abstract public interface to start a training session.
+           Subclasses should call super()._start_training() and provide 
+           the task and datset classes'''
+        raise NotImplementedError()
+
+
+def start_training_from_cli_args(
+    model:      BaseModel, 
+    trainsplit: tp.List[tp.Any],
+    args:       argparse.Namespace,
+    ds_kw:      tp.Dict[str, tp.Any]  = {},
+    ld_kw:      tp.Dict[str, tp.Any]  = {},
+    task_kw:    tp.Dict[str, tp.Any]  = {},
+    fit_kw:     tp.Dict[str, tp.Any]  = {},
+) -> bool:
+    '''`BaseModel.start_training()` with basic config provided by
+       command line arguments from `args.base_training_argparser()`'''
+    ld_kw   = {'batch_size':args.batchsize} | ld_kw
+    task_kw = {'lr':args.lr} | task_kw
+    fit_kw  = {
+        'checkpoint_dir':  args.checkpointdir, 
+        'checkpoint_freq': 5,
+        'epochs':          args.epochs
+    } | fit_kw
+
+    model.start_training(
+        trainsplit, 
+        ds_kw   = ds_kw,
+        ld_kw   = ld_kw,
+        task_kw = task_kw,
+        fit_kw  = fit_kw,
+    )
+    model.save(os.path.join(args.checkpointdir, 'model.pt.zip'))
+    return True
 
 
 def load_model(filename:str) -> BaseModel:

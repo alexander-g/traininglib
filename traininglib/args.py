@@ -9,6 +9,7 @@ def base_training_argparser() -> argparse.ArgumentParser:
     parser.add_argument('--lr',        type=float, default=1e-3, help='Default: 1e-3')
     parser.add_argument('--epochs',    type=int,   default=30,   help='Default: 30')
     parser.add_argument('--batchsize', type=int,   default=8,    help='Default: 8')
+    #TODO: warmup
     parser.add_argument(
         '--checkpointdir', 
         type    = time.strftime, 
@@ -27,12 +28,12 @@ def cpu_or_gpu(x:str) -> str:
     else:
         if x.startswith('cuda:'):
             x = x[len('cuda:'):]
-        x = int(x)
-        if x < 0:
+        gpu = int(x)
+        if gpu < 0:
             raise ValueError('Non-negative GPU number required')
-        if x > torch.cuda.device_count():
+        if gpu > torch.cuda.device_count():
             raise ValueError('Device number too large')
-        return f'cuda:{x}'
+        return f'cuda:{gpu}'
 
 def _default_device() -> str:
     return ( 'cuda:0' if torch.cuda.is_available() else 'cpu' )
