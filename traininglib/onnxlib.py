@@ -9,6 +9,11 @@ warnings.simplefilter('ignore', UserWarning)  #pytorch throws too many of those
 
 from torch.fx.experimental.proxy_tensor import make_fx
 
+import onnxscript
+from onnxscript.onnx_opset import opset16 as op
+opset_version = 15
+
+
 import sys
 #import torch.optim.sgd does not work
 sgd_module = sys.modules['torch.optim.sgd']
@@ -28,8 +33,13 @@ class DebugInfo(tp.NamedTuple):
 
 
 class ExportedONNX(tp.NamedTuple):
+    #the first training step in onnx format; initializes optimizer
     onnx_bytes_0: bytes
+    #all following training steps in onnx format
     onnx_bytes:   bytes
+
+    #onnx inputfeed (excluding `x` and `t`) for the first training step
+    inputfeed:    tp.Dict[str, np.ndarray]
 
     #only if _debug == True
     debug: DebugInfo|None = None
@@ -100,23 +110,19 @@ def export_model_as_functional_training_onnx(
         torch.ops.aten.convolution_backward.default: manual_convolution_backward,
         torch.ops.aten.max_pool2d_with_indices_backward.default: 
             manual_max_pool2d_with_indices_backward,
-        torch.ops.aten.threshold_backward.default: threshold_backward,
         torch.ops.aten.native_batch_norm_backward.default: 
             torch._decomp.decompositions.native_batch_norm_backward,
         torch.ops.aten.var_mean.correction:var_mean_64,
         torch.ops.aten.rsqrt.default: rsqrt_64,
-        # torch.ops.aten.nll_loss_forward.default: 
-        #     torch._decomp.decompositions.nll_loss_forward,
-        # torch.ops.aten.nll_loss_backward.default: 
-        #     torch._decomp.decompositions.nll_loss_backward,
-        torch.ops.aten.nll_loss_forward.default:  _nll_loss_forward,
-        torch.ops.aten.nll_loss_backward.default: _nll_loss_backward,
+        torch.ops.aten.nll_loss_forward.default: 
+            torch._decomp.decompositions.nll_loss_forward,
+        torch.ops.aten.nll_loss_backward.default: 
+            torch._decomp.decompositions.nll_loss_backward,
         torch.ops.aten._log_softmax_backward_data.default:
             torch._decomp.decompositions._log_softmax_backward_data,
     }
     train_step_tx_0 = make_fx(train_step_0, tracing_mode='fake')(sd, x, t)
     rename_all_nodes(train_step_tx_0, prefix='main')
-    replace_all_aten_sgn(train_step_tx_0)
     replace_inplace_ops(train_step_tx_0, bn=False)
     replace_all_aten_native_batch_norm(train_step_tx_0)
     for torch_op, manual_op in decompositions.items():
@@ -140,7 +146,6 @@ def export_model_as_functional_training_onnx(
         sd, x, t, _init_out['buffers']
     )
     rename_all_nodes(train_step_tx, prefix='main')
-    replace_all_aten_sgn(train_step_tx)
     replace_inplace_ops(train_step_tx, bn=False)
     replace_all_aten_native_batch_norm(train_step_tx)
     for torch_op, manual_op in decompositions.items():
@@ -201,11 +206,13 @@ def export_model_as_functional_training_onnx(
     )
     onnx_bytes = buf.getvalue()
 
+    inputfeed  = state_dict_to_onnx_input(sd, inputnames_0)
+
     if not _debug:
-        return ExportedONNX(onnx_bytes_0, onnx_bytes)
+        return ExportedONNX(onnx_bytes_0, onnx_bytes, inputfeed)
     else:
         return ExportedONNX(
-            onnx_bytes_0, onnx_bytes, debug = DebugInfo(
+            onnx_bytes_0, onnx_bytes, inputfeed, debug = DebugInfo(
                 train_step_tx_0,
                 train_step_tx,
                 train_step_tx_0_unmodified, 
@@ -381,12 +388,6 @@ def manual_max_pool2d_with_indices_backward(
     return output.reshape(input.shape)
 
 
-def threshold_backward(grad_output:torch.Tensor, self:torch.Tensor, threshold:float):
-    #https://github.com/pytorch/pytorch/blob/fe5d8850e27d98439166c76ccc5e167fd3960df8/torch/_decomp/decompositions.py#L211C1-L212C58
-    #equivalent to the link above, except that using torch.tensor(0.0, dtype=torch.float32)
-    #onnx complained
-    return torch.where(self <= threshold, torch.tensor(0.0, dtype=torch.float32), grad_output)
-
 def var_mean_64(x:torch.Tensor, *a, **kw) -> tp.Tuple[torch.Tensor, torch.Tensor]:
     '''Explicitly convert input to float64. Torch does it internally, ONNX doesnt.'''
     x = x.to(torch.float64)
@@ -424,21 +425,6 @@ def replace_op_type_with_custom_function(
             if reuse_name:
                 new_node.name = node.name
     gm.graph.lint()
-    gm.recompile()
-
-
-def replace_all_aten_sgn(gm:torch.fx.graph_module.GraphModule):
-    '''Replace all torch.ops.aten.sgn with torch.sign, 
-       because onnx cannot handle it for some reason
-    '''
-    graph:torch.fx.graph.Graph = gm.graph
-    for node in gm.graph.nodes:
-        if node.target == torch.ops.aten.sgn.default:
-            with graph.inserting_before(node):
-                sign = graph.call_function(torch.sign, node.args)
-                node.replace_all_uses_with(sign)
-            graph.erase_node(node)
-    graph.lint()
     gm.recompile()
 
 
@@ -646,7 +632,10 @@ def replace_inplace_ops(gm:torch.fx.graph_module.GraphModule, bn:bool=False):
     gm.recompile()
 
 
-def fixed_squeeze(g, x:torch.Value, dim:torch.Value|None = None):
+
+GraphContext = torch.onnx._internal.jit_utils.GraphContext
+
+def onnx_squeeze(g:GraphContext, x:torch.Value, dim:torch.Value|None = None):
     if dim is None:
         return g.op('Squeeze', x)
     
@@ -655,7 +644,49 @@ def fixed_squeeze(g, x:torch.Value, dim:torch.Value|None = None):
         dims_to_squeeze = dims_to_squeeze[None]
     return g.op("Squeeze", x, g.op("Constant", value_t=dims_to_squeeze))
 
-torch.onnx.register_custom_op_symbolic('::squeeze', fixed_squeeze, opset_version=11)
+torch.onnx.register_custom_op_symbolic('::squeeze', onnx_squeeze, opset_version=16)
+
+
+@onnxscript.script() # type: ignore [arg-type]
+def onnx_sign(X):
+    return op.Sign(X)
+
+def aten_sgn(g:GraphContext, X:torch.Value):
+    return g.onnxscript_op(onnx_sign, X).setType(X.type())
+
+torch.onnx.register_custom_op_symbolic('aten::sgn', aten_sgn, opset_version=16)
+
+
+@onnxscript.script() # type: ignore [arg-type]
+def onnx_threshold(grad_output, self, threshold):
+    threshold_casted = op.CastLike(threshold, self)
+    mask = self <= threshold_casted
+    zero = op.CastLike(0, grad_output) # type: ignore [type-var]
+    return op.Where( mask, zero, grad_output )
+
+def aten_threshold_backward(
+    g:GraphContext, grad_output:torch.Value, self:torch.Value, threshold:torch.Value
+) -> torch.Value:
+    return g.onnxscript_op(
+        onnx_threshold, grad_output, self, threshold
+    ).setType(grad_output.type())
+
+torch.onnx.register_custom_op_symbolic(
+    'aten::threshold_backward', aten_threshold_backward, opset_version=16
+)
+
+
+def aten_where(g:GraphContext, mask, x0, x1):
+    if x0.type().dim() < x1.type().dim():
+        x0 = g.op("CastLike", x0, x1)
+    else:
+        x1 = g.op("CastLike", x1, x0)
+    return g.op('Where', mask, x0, x1)
+
+torch.onnx.register_custom_op_symbolic(
+    'aten::where', aten_where, opset_version=16
+)
+
 
 
 def cleanup_graph(gm:torch.fx.graph_module.GraphModule):
@@ -690,113 +721,6 @@ def rename_all_nodes(gm:torch.fx.graph_module.GraphModule, prefix:str):
     for node in gm.graph.nodes:
         node.name = f'{prefix}.{node.name}'
 
-
-
-Tensor = torch.Tensor
-from enum import Enum
-
-class Reduction(Enum):
-    NONE = 0
-    MEAN = 1
-    SUM = 2
-
-
-def _nll_loss_forward(
-    self: Tensor,
-    target: Tensor,
-    weight: tp.Optional[Tensor],
-    reduction: int,
-    ignore_index: int,
-) -> tp.Tuple[Tensor, Tensor]:
-    #https://github.com/pytorch/pytorch/blob/7ea184d7e33369610492ff0936369ea00f2b3580/torch/_decomp/decompositions.py#L3269C1-L3319C32
-    # self can be [N, C] or [C]
-    # target can be [N] or []
-
-    n_dims = self.dim()
-    channel_dim = 1
-    if n_dims < 2:
-        channel_dim = 0
-
-    if weight is not None:
-        if n_dims > 1:
-            shape = [
-                1,
-            ] * n_dims
-            shape[channel_dim] = weight.shape[0]
-            w = weight.view(shape)
-        else:
-            w = weight
-        self = self * w
-    safe_target = torch.where(target != ignore_index, target, 0)
-    safe_target_ = safe_target.unsqueeze(channel_dim)
-    # target can be [N, 1] or [1]
-
-    result = -torch.gather(self, channel_dim, safe_target_).squeeze(channel_dim)
-
-    #result = torch.where(target != ignore_index, result, 0)
-    result = torch.where(
-        target != ignore_index, result, torch.as_tensor(0, dtype=torch.float32)
-    )
-
-    if reduction == Reduction.NONE.value and n_dims > 1:
-        total_weight = self.new_full((), 0.0)
-        return result, total_weight
-
-    if weight is not None:
-        w = w.expand(self.shape)
-        wsum = torch.gather(w, channel_dim, safe_target_).squeeze(channel_dim)
-        #wsum = torch.where(target != ignore_index, wsum, 0)
-        wsum = torch.where(
-            target != ignore_index, wsum, torch.as_tensor(0, dtype=torch.float32)
-        )
-        total_weight = wsum.sum()
-    else:
-        total_weight = (target != ignore_index).sum().to(self)
-
-    if reduction == Reduction.SUM.value:
-        result = result.sum()
-    elif reduction == Reduction.MEAN.value:
-        result = result.sum() / total_weight
-
-    return result, total_weight
-
-def _nll_loss_backward(
-    grad_output: Tensor,
-    self: Tensor,
-    target: Tensor,
-    weight: tp.Optional[Tensor],
-    reduction: int,
-    ignore_index: int,
-    total_weight: Tensor,
-) -> Tensor:
-    #https://github.com/pytorch/pytorch/blob/7ea184d7e33369610492ff0936369ea00f2b3580/torch/_decomp/decompositions.py#L488C1-L517C36
-    channel_dim = 0 if self.dim() < 2 else 1
-    if reduction == Reduction.MEAN.value:
-        grad_output = grad_output / total_weight
-
-    target = target.unsqueeze(channel_dim)
-    safe_target = torch.where(target != ignore_index, target, 0)
-    #NOTE: not using zeros_like() because it would be interpreted as a constant 
-    #and stored directly in onnx, blowing up the file size
-    #grad_input = torch.zeros_like(self)
-    grad_input = self * 0.0
-    grad_input = torch.scatter(grad_input, channel_dim, safe_target, -1.0)
-
-    if grad_input.dim() > grad_output.dim() > 0:
-        grad_output = grad_output.unsqueeze(channel_dim)
-
-    if weight is not None:
-        new_shape = [1 for _ in range(self.dim())]
-        new_shape[channel_dim] = weight.shape[0]
-        weight = weight.reshape(new_shape)
-        grad_output = grad_output * weight
-
-    #grad_output = torch.where(target != ignore_index, grad_output, 0)
-    grad_output = torch.where(
-        target != ignore_index, grad_output, torch.as_tensor(0, dtype=torch.float32)
-    )
-
-    return grad_input * grad_output
 
 
 def _return_all_nodes(gm:torch.fx.graph_module.GraphModule) -> torch.fx.graph_module.GraphModule:

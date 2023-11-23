@@ -17,15 +17,17 @@ class MiniResNet(torch.nn.Sequential):
             torch.nn.Flatten(),
         )
 
-miniresnet = torchvision.models.resnet._resnet(
-    torchvision.models.resnet.BasicBlock, [1, 1, 1, 1], None, None
-)
+#miniresnet = torchvision.models.resnet._resnet(
+#    torchvision.models.resnet.BasicBlock, [1, 1, 1, 1], None, None
+#)
+
 
 class TestItem(tp.NamedTuple):
     module:    torch.nn.Module
     loss_func: tp.Callable
     x:         torch.Tensor
     t:         torch.Tensor
+    atol:      float         = 1e-6
 
 testdata: tp.List[tp.Tuple[TestItem, str]] = [
     (
@@ -95,7 +97,8 @@ def test_export(testitem:TestItem, desc:str):
     sess0        = ort.InferenceSession(exported.onnx_bytes_0)
     outputnames0 = [o.name for o in sess0.get_outputs()]
     inputsnames0 = [o.name for o in sess0.get_inputs()]
-    inputs0  = onnxlib.state_dict_to_onnx_input(m.state_dict(), inputsnames0)
+    #inputs0  = onnxlib.state_dict_to_onnx_input(m.state_dict(), inputsnames0)
+    inputs0 = exported.inputfeed
     inputs0.update({'x': x.numpy(), 't':t.numpy()})
     out0     = sess0.run(outputnames0, inputs0)
     out0     = dict(zip(outputnames0, out0))
@@ -169,7 +172,7 @@ def test_export(testitem:TestItem, desc:str):
             print('torch:', np.ravel(p_torch)[-16:], getattr(p_torch, 'shape', None))
             print('onnx: ', np.ravel(p_onnx)[-16:],  getattr(p_onnx,  'shape', None))
             print('diff: ', np.abs(p_torch - p_onnx).max() )
-            assert np.allclose(p_torch, p_onnx, atol=1e-02)
+            assert np.allclose(p_torch, p_onnx, atol=testitem.atol)
             print()
         print()
 
