@@ -13,9 +13,10 @@ def base_training_argparser() -> argparse.ArgumentParser:
     parser.add_argument(
         '--checkpointdir', 
         type    = time.strftime, 
-        default = './checkpoints/%Y-%m-%d_%Hh%Mm%Ss/', 
+        default = './checkpoints/%Y-%m-%d_%Hh%Mm%Ss', 
         help    = 'Where to save trained models'
     )
+    parser.add_argument('--suffix', type=str, help='Suffix to append to checkpoint name')
     parser.add_argument(
         '--device', type=cpu_or_gpu, default=_default_device(), help='Which GPU to use (or CPU).'
     )

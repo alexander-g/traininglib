@@ -151,8 +151,9 @@ def start_training_from_cli_args(
        command line arguments from `args.base_training_argparser()`'''
     ld_kw   = {'batch_size':args.batchsize} | ld_kw
     task_kw = {'lr':args.lr} | task_kw
+    checkpointdir, name = util.generate_output_name(args)
     fit_kw  = {
-        'checkpoint_dir':  args.checkpointdir, 
+        'checkpoint_dir':  checkpointdir, 
         'checkpoint_freq': 5,
         'epochs':          args.epochs
     } | fit_kw
@@ -164,7 +165,7 @@ def start_training_from_cli_args(
         task_kw = task_kw,
         fit_kw  = fit_kw,
     )
-    model.save(os.path.join(args.checkpointdir, 'model.pt.zip'))
+    model.save(os.path.join(checkpointdir, f'{name}.pt.zip'))
     return True
 
 

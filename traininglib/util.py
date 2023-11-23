@@ -10,14 +10,13 @@ from . import modellib
 
 
 
-def generate_output_name(args, config) -> tp.Tuple[str,str]:
+def generate_output_name(args) -> tp.Tuple[str,str]:
     '''Construct a standardized name, containing current time and some config parameters'''
     date = time.strftime('%Y-%m-%d')
     tod  = time.strftime('%Hh%Mm%Ss')
     sufx = (f'_{args.suffix}' if args.suffix else '')
-    dir  = f'{date}_{tod}_{config.module}_{config.resolution}px_{config.epochs}e{sufx}'
-    name = f'{date}_{config.module}{sufx}'
-    path = os.path.join(args.output, dir)
+    path = f'{args.checkpointdir}_{args.inputsize}px_{args.epochs}e{sufx}'
+    name = f'{date}_{sufx}'
     return path, name
 
 def collect_loaded_non_venv_modules() -> tp.List[str]:

@@ -4,6 +4,7 @@ import glob
 import numpy as np
 import torch, torchvision
 import PIL.Image
+PIL.Image.MAX_IMAGE_PIXELS = None
 
 
 def create_dataloader(
