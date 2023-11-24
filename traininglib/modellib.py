@@ -141,11 +141,12 @@ def start_training_from_cli_args(
 ) -> bool:
     '''`BaseModel.start_training()` with basic config provided by
        command line arguments from `args.base_training_argparser()`'''
+    checkpointdir, name = util.generate_output_name(args)
     fit_kw  = {
         'epochs':          args.epochs,
         'lr':              args.lr,
         'batch_size':      args.batchsize,
-        'checkpoint_dir':  args.checkpointdir, 
+        'checkpoint_dir':  checkpointdir, 
     } | fit_kw
 
     model.start_training(

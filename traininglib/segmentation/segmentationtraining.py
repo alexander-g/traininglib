@@ -61,7 +61,7 @@ class SegmentationTask(TrainingTask):
     
     def validation_step(self, batch:SegmentationBatch) -> Metrics:
         _loss, logs = self.forward_step(batch, augment=False)
-        val_logs = {f'{k}.v':v for k,v in logs.items()}
+        val_logs = {f'v.{k}':v for k,v in logs.items()}
         return val_logs
     
     def augment(self, batch:SegmentationBatch) -> SegmentationBatch:
