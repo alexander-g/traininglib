@@ -120,17 +120,23 @@ def random_rotate_flip(*x:torch.Tensor) -> tp.List[torch.Tensor]:
             output[i] = torch.flip(output[i], dims=(-1,))
     return output
 
-def write_image(filepath:str, x:torch.Tensor, makedirs:bool=True) -> None:
-    assert torch.is_tensor(x)
-    assert x.dtype == torch.float32
-    assert x.min() >= 0 and x.max() <= 1
-    assert len(x.shape) == 3 and x.shape[0] == 3
-
+def write_image(filepath:str, x:np.ndarray, makedirs:bool=True) -> None:
+    assert len(x.shape) == 3 and x.shape[-1] == 3
+    if x.dtype in [np.float32, np.float64]:
+        x = (x * 255).astype('uint8')
+    
     if makedirs:
         os.makedirs(os.path.dirname(filepath), exist_ok=True)
-    PIL.Image.fromarray(
-        (x.cpu().detach().numpy().transpose(1,2,0) * 255).astype('uint8')
-    ).save(filepath)
+    PIL.Image.fromarray(x).save(filepath)
+
+def write_image_tensor(filepath:str, x:torch.Tensor, makedirs:bool=True) -> None:
+    assert torch.is_tensor(x)
+    #assert x.dtype == torch.float32
+    #assert x.min() >= 0 and x.max() <= 1
+    assert len(x.shape) == 3 and x.shape[0] == 3
+
+    x_np = x.cpu().detach().numpy().transpose(1,2,0)
+    return write_image(filepath, x_np, makedirs)
 
 
 Color = tp.Tuple[int,int,int]

@@ -172,7 +172,7 @@ class SegmentationDataset:
                 )
                 all_patch_pairs.append((in_patchpath, an_patchpath))
 
-                datalib.write_image(in_patchpath, in_patch)
-                datalib.write_image(an_patchpath, an_patch)
+                datalib.write_image_tensor(in_patchpath, in_patch)
+                datalib.write_image_tensor(an_patchpath, an_patch)
         return all_patch_pairs
 
