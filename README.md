@@ -1,0 +1,1 @@
+A set of functions I use for my projects. Intended for code re-use, not so much as a public library.

@@ -7,7 +7,7 @@ import PIL.Image
 
 
 def create_dataloader(
-    ds:         torch.utils.data.Dataset, 
+    dataset, 
     batch_size: int, 
     shuffle:    bool=False, 
     num_workers:int|tp.Literal['auto'] = 'auto', 
@@ -16,10 +16,10 @@ def create_dataloader(
     if num_workers == 'auto':
         num_workers = os.cpu_count() or 1
     return torch.utils.data.DataLoader(
-        ds, 
+        dataset, 
         batch_size, 
         shuffle, 
-        collate_fn      = getattr(ds, 'collate_fn', None),
+        collate_fn      = getattr(dataset, 'collate_fn', None),
         num_workers     = num_workers, 
         pin_memory      = True,
         worker_init_fn  = lambda x: np.random.seed(torch.randint(0,1000,(1,))[0].item()+x),
