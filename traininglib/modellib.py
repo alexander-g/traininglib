@@ -105,30 +105,23 @@ class BaseModel(torch.nn.Module):
     
     def _start_training(
         self,
-        trainsplit:   tp.List[tp.Any],
-        DatasetClass: tp.Type,
         TrainingTask: tp.Type,
+        trainsplit:   tp.List[tp.Any],
+        valsplit:     tp.List[tp.Any]|None = None,
         *,
-        ds_kw:        tp.Dict[str, tp.Any]        = {},
-        ld_kw:        tp.Dict[str, tp.Any]        = {},
-        task_kw:      tp.Dict[str, tp.Any]        = {},
-        fit_kw:       tp.Dict[str, tp.Any]        = {},
+        task_kw:      tp.Dict[str, tp.Any] = {},
+        fit_kw:       tp.Dict[str, tp.Any] = {},
     ):
         '''Internal method to start a training session.'''
         assert len(trainsplit) > 0
-        ds    = DatasetClass(trainsplit, **ds_kw)
-        ld_kw = {'batch_size':8} | ld_kw
-        ld    = datalib.create_dataloader(ds, shuffle=True, **ld_kw)
-        print(f"Training on {len(ds)} images / {len(ld)} batches.")
-        task  = TrainingTask(self, **task_kw)
-        return task.fit(ld, **fit_kw)
+        task = TrainingTask(self, **task_kw)
+        return task.fit(trainsplit, valsplit, **fit_kw)
     
     def start_training(
         self,
         trainsplit: tp.List[tp.Any],
+        valsplit:   tp.List[tp.Any]|None = None,
         *,
-        ds_kw:      tp.Dict[str, tp.Any] = {},
-        ld_kw:      tp.Dict[str, tp.Any] = {},
         task_kw:    tp.Dict[str, tp.Any] = {},
         fit_kw:     tp.Dict[str, tp.Any] = {},
     ):
@@ -139,29 +132,25 @@ class BaseModel(torch.nn.Module):
 
 
 def start_training_from_cli_args(
+    args:       argparse.Namespace,
     model:      BaseModel, 
     trainsplit: tp.List[tp.Any],
-    args:       argparse.Namespace,
-    ds_kw:      tp.Dict[str, tp.Any]  = {},
-    ld_kw:      tp.Dict[str, tp.Any]  = {},
+    valsplit:   tp.List[tp.Any]|None  = None,
     task_kw:    tp.Dict[str, tp.Any]  = {},
     fit_kw:     tp.Dict[str, tp.Any]  = {},
 ) -> bool:
     '''`BaseModel.start_training()` with basic config provided by
        command line arguments from `args.base_training_argparser()`'''
-    ld_kw   = {'batch_size':args.batchsize} | ld_kw
-    task_kw = {'lr':args.lr} | task_kw
-    checkpointdir, name = util.generate_output_name(args)
     fit_kw  = {
-        'checkpoint_dir':  checkpointdir, 
-        'checkpoint_freq': 5,
-        'epochs':          args.epochs
+        'epochs':          args.epochs,
+        'lr':              args.lr,
+        'batch_size':      args.batchsize,
+        'checkpoint_dir':  args.checkpointdir, 
     } | fit_kw
 
     model.start_training(
         trainsplit, 
-        ds_kw   = ds_kw,
-        ld_kw   = ld_kw,
+        valsplit,
         task_kw = task_kw,
         fit_kw  = fit_kw,
     )

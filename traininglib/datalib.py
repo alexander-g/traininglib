@@ -8,7 +8,7 @@ PIL.Image.MAX_IMAGE_PIXELS = None
 
 
 def create_dataloader(
-    ds:         torch.utils.data.Dataset, 
+    dataset, 
     batch_size: int, 
     shuffle:    bool=False, 
     num_workers:int|tp.Literal['auto'] = 'auto', 
@@ -17,10 +17,10 @@ def create_dataloader(
     if num_workers == 'auto':
         num_workers = os.cpu_count() or 1
     return torch.utils.data.DataLoader(
-        ds, 
+        dataset, 
         batch_size, 
         shuffle, 
-        collate_fn      = getattr(ds, 'collate_fn', None),
+        collate_fn      = getattr(dataset, 'collate_fn', None),
         num_workers     = num_workers, 
         pin_memory      = True,
         worker_init_fn  = lambda x: np.random.seed(torch.randint(0,1000,(1,))[0].item()+x),
@@ -121,17 +121,23 @@ def random_rotate_flip(*x:torch.Tensor) -> tp.List[torch.Tensor]:
             output[i] = torch.flip(output[i], dims=(-1,))
     return output
 
-def write_image(filepath:str, x:torch.Tensor, makedirs:bool=True) -> None:
-    assert torch.is_tensor(x)
-    assert x.dtype == torch.float32
-    assert x.min() >= 0 and x.max() <= 1
-    assert len(x.shape) == 3 and x.shape[0] == 3
-
+def write_image(filepath:str, x:np.ndarray, makedirs:bool=True) -> None:
+    assert len(x.shape) == 3 and x.shape[-1] == 3
+    if x.dtype in [np.float32, np.float64]:
+        x = (x * 255).astype('uint8')
+    
     if makedirs:
         os.makedirs(os.path.dirname(filepath), exist_ok=True)
-    PIL.Image.fromarray(
-        (x.cpu().detach().numpy().transpose(1,2,0) * 255).astype('uint8')
-    ).save(filepath)
+    PIL.Image.fromarray(x).save(filepath)
+
+def write_image_tensor(filepath:str, x:torch.Tensor, makedirs:bool=True) -> None:
+    assert torch.is_tensor(x)
+    #assert x.dtype == torch.float32
+    #assert x.min() >= 0 and x.max() <= 1
+    assert len(x.shape) == 3 and x.shape[0] == 3
+
+    x_np = x.cpu().detach().numpy().transpose(1,2,0)
+    return write_image(filepath, x_np, makedirs)
 
 
 Color = tp.Tuple[int,int,int]
