@@ -80,6 +80,8 @@ def resize_tensor(
         y = y[0]
     return y
 
+def to_device(*x:torch.Tensor, device:torch.device|str) -> tp.List[torch.Tensor]:
+    return [xi.to(device) for xi in x]
 
 interpolation_modes = {
     'nearest':  torchvision.transforms.InterpolationMode.NEAREST,

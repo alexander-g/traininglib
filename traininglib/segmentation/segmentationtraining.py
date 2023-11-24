@@ -35,6 +35,7 @@ class SegmentationTask(TrainingTask):
 
     def forward_step(self, batch:SegmentationBatch, augment:bool) -> tp.Tuple[Loss, Metrics]:
         '''Code re-use for training and validation'''
+        batch = datalib.to_device(*batch, device=self.device)
         x,t = batch
         assert len(t.shape) == 4 and t.shape[1] == 3, 'Expecting batched RGB targets'
         assert len(x.shape) == 4 and x.shape[1] == 3, 'Expecting batched RGB inputs'
@@ -49,7 +50,6 @@ class SegmentationTask(TrainingTask):
             weight = 1 - convert_rgb_to_mask(t_rgb, self.ignore_colors)
         
         y    = self.basemodule(x)
-        t    = t.to(y.device)
         loss = torch.nn.functional.binary_cross_entropy_with_logits(
             y, t, weight, pos_weight=self.pos_weight.to(y.device)
         )
