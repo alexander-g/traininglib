@@ -1,4 +1,5 @@
 import typing as tp
+import functools
 from traininglib import onnxlib
 import onnxruntime as ort
 import torch, torchvision
@@ -17,10 +18,28 @@ class MiniResNet(torch.nn.Sequential):
             torch.nn.Flatten(),
         )
 
-#miniresnet = torchvision.models.resnet._resnet(
-#    torchvision.models.resnet.BasicBlock, [1, 1, 1, 1], None, None
-#)
-
+class MiniMobileNet(torch.nn.Sequential):
+    def __init__(self):
+        super().__init__(
+            torchvision.ops.misc.Conv2dNormActivation(
+                3,
+                16,
+                kernel_size=3,
+                stride=2,
+                norm_layer=functools.partial(torch.nn.BatchNorm2d, eps=0.001, momentum=0.01),
+                activation_layer=torch.nn.Hardswish,
+                #activation_layer=lambda *a,**kw: torch.nn.Hardswish(inplace=False),
+            ),
+            torchvision.models.mobilenetv3.InvertedResidual(
+                torchvision.models.mobilenetv3.InvertedResidualConfig(
+                    16, 3, 16, 16, True, "RE", 1, 1, 1
+                ),
+                functools.partial(torch.nn.BatchNorm2d, eps=0.001, momentum=0.01),
+            ),
+            torch.nn.AdaptiveAvgPool2d((1,1)),
+            torch.nn.Flatten(),
+        )
+    
 
 class TestItem(tp.NamedTuple):
     module:    torch.nn.Module
@@ -74,7 +93,35 @@ testdata: tp.List[tp.Tuple[TestItem, str]] = [
             t         = torch.randint(0,8, [2]),
         ), 'miniresnet'
     ),
-    #(miniresnet, 'miniresnet'),
+    (
+        TestItem(
+            module    = MiniMobileNet(),
+            loss_func = torch.nn.functional.cross_entropy,
+            x         = torch.rand([2,3,10,10]),
+            t         = torch.randint(0,5, [2]),
+        ), 'mini-mobilenet-v3'
+    ),
+    # (
+    #     TestItem(
+    #         module    = torchvision.models.resnet._resnet(
+    #            torchvision.models.resnet.BasicBlock, [1, 1, 1, 1], None, False
+    #         ),
+    #         loss_func = torch.nn.functional.cross_entropy,
+    #         x         = torch.rand([2,3,10,10]),
+    #         t         = torch.randint(0,5, [2]),
+    #         atol      = 1e-2,
+    #     ), 'resnet10?'
+    # ),
+    # (
+    #     TestItem(
+    #         #module    = torchvision.models.mobilenet_v3_large(weights=None, progress=False),
+    #         module    = torchvision.models.mobilenet_v3_small(weights=None, progress=False),
+    #         loss_func = torch.nn.functional.cross_entropy,
+    #         x         = torch.rand([2,3,10,10]),
+    #         t         = torch.randint(0,5, [2]),
+
+    #     ), 'mobilenet-v3-full'
+    # ),
     #(torchvision.models.resnet18(weights='DEFAULT', progress=None), 'resnet18'),
 ]
 
@@ -97,7 +144,6 @@ def test_export(testitem:TestItem, desc:str):
     sess0        = ort.InferenceSession(exported.onnx_bytes_0)
     outputnames0 = [o.name for o in sess0.get_outputs()]
     inputsnames0 = [o.name for o in sess0.get_inputs()]
-    #inputs0  = onnxlib.state_dict_to_onnx_input(m.state_dict(), inputsnames0)
     inputs0 = exported.inputfeed
     inputs0.update({'x': x.numpy(), 't':t.numpy()})
     out0     = sess0.run(outputnames0, inputs0)
@@ -196,7 +242,11 @@ conv_testdata = [
     ([
         torch.rand([2,8,5,5]), torch.rand([2,3,10,10]), torch.rand([8,3,7,7]),
         [8], [2,2], [3,3], [1,1], False, [0,0], 1, [False,True,True]
-    ], 'resnet-first-layer')
+    ], 'resnet-first-layer'),
+    ([
+        torch.rand([2,96,1,1]), torch.rand([2,96,1,1]), torch.rand([96,1,5,5]),
+        [0], [1,1], [2,2], [1,1], False, [0,0], 96, [True,True,True]
+    ], 'mobilenet-with-groups')
 ]
 
 @pytest.mark.parametrize("args, desc", conv_testdata)

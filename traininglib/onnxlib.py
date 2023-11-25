@@ -120,6 +120,12 @@ def export_model_as_functional_training_onnx(
             torch._decomp.decompositions.nll_loss_backward,
         torch.ops.aten._log_softmax_backward_data.default:
             torch._decomp.decompositions._log_softmax_backward_data,
+        #inplace
+        torch.ops.aten.hardswish_.default: torch.ops.aten.hardswish,
+        torch.ops.aten.hardswish_backward.default:
+           torch._decomp.decompositions.hardswish_backward,
+        torch.ops.aten.hardsigmoid_backward.default:
+            torch._decomp.decompositions.hardsigmoid_backward,
     }
     train_step_tx_0 = make_fx(train_step_0, tracing_mode='fake')(sd, x, t)
     rename_all_nodes(train_step_tx_0, prefix='main')
@@ -341,7 +347,7 @@ def manual_convolution_backward(
     grad_input_needed = outmask[0]
     if grad_input_needed:
         if groups != 1:
-            weight = weight.reshape(B//groups, C*groups, *weight.shape[2:] )
+            weight = weight.reshape(C//groups, weight.shape[1]*groups, *weight.shape[2:] )
         flip_dims     = list(range(2, len(weight.shape)))
         weight_flip   = torch.flip(weight, dims=flip_dims)
         weight_flip_T = weight_flip.transpose(0,1)
@@ -593,9 +599,6 @@ def _unsqueeze_to_dim(x: torch.Tensor, dim: int) -> torch.Tensor:
     for _ in range(dim - x.dim()):
         x = x.unsqueeze(-1)
     return x
-            
-
-
 
 
 
