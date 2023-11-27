@@ -122,7 +122,6 @@ testdata: tp.List[tp.Tuple[TestItem, str]] = [
 
     #     ), 'mobilenet-v3-full'
     # ),
-    #(torchvision.models.resnet18(weights='DEFAULT', progress=None), 'resnet18'),
 ]
 
 
@@ -215,8 +214,8 @@ def test_export(testitem:TestItem, desc:str):
             k_onnx = k
             p_onnx = onnx_out_i[k_onnx]
             print(k)
-            print('torch:', np.ravel(p_torch)[-16:], getattr(p_torch, 'shape', None))
-            print('onnx: ', np.ravel(p_onnx)[-16:],  getattr(p_onnx,  'shape', None))
+            print('torch:', np.ravel(p_torch)[-5:], getattr(p_torch, 'shape', None))
+            print('onnx: ', np.ravel(p_onnx)[-5:],  getattr(p_onnx,  'shape', None))
             print('diff: ', np.abs(p_torch - p_onnx).max() )
             assert np.allclose(p_torch, p_onnx, atol=testitem.atol)
             print()
