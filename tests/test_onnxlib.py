@@ -39,13 +39,15 @@ class MiniMobileNet(torch.nn.Sequential):
             torch.nn.AdaptiveAvgPool2d((1,1)),
             torch.nn.Flatten(),
         )
-    
+
+default_sgd = lambda p: torch.optim.SGD(p, lr=0.05, momentum=0.9, weight_decay=1e-4)
 
 class TestItem(tp.NamedTuple):
     module:    torch.nn.Module
     loss_func: tp.Callable
     x:         torch.Tensor
     t:         torch.Tensor
+    optim:     tp.Callable   = default_sgd
     atol:      float         = 1e-6
 
 testdata: tp.List[tp.Tuple[TestItem, str]] = [
@@ -59,6 +61,18 @@ testdata: tp.List[tp.Tuple[TestItem, str]] = [
             x         = torch.rand([2,3,10,10]),
             t         = torch.rand([2,1,8,8])
         ) , '2x-2dconv'
+    ),
+    (
+        TestItem(
+            module = torch.nn.Sequential(
+                torch.nn.Conv2d(3,5, kernel_size=3),
+                torch.nn.Conv2d(5,1, kernel_size=1),
+            ),
+            loss_func = torch.nn.functional.l1_loss,
+            x         = torch.rand([2,3,10,10]),
+            t         = torch.rand([2,1,8,8]),
+            optim     = lambda p: torch.optim.AdamW(p, lr=2e-4),
+        ) , 'adamw'
     ),
     (
         TestItem(
@@ -133,45 +147,37 @@ def test_export(testitem:TestItem, desc:str):
     x = testitem.x
     t = testitem.t
     loss_func = testitem.loss_func
+    optimizer = testitem.optim(m.parameters())
 
     x0 = torch.randn(x.shape)
-    exported = onnxlib.export_model_as_functional_training_onnx(m, loss_func, x0, t)
+    exported = onnxlib.export_model_as_functional_training_onnx(
+        m, loss_func, x0, t, optimizer
+    )
 
-
-    onnx_outputs = []
-
-    sess0        = ort.InferenceSession(exported.onnx_bytes_0)
-    outputnames0 = [o.name for o in sess0.get_outputs()]
-    inputsnames0 = [o.name for o in sess0.get_inputs()]
-    inputs0 = exported.inputfeed
-    inputs0.update({'x': x.numpy(), 't':t.numpy()})
-    out0     = sess0.run(outputnames0, inputs0)
-    out0     = dict(zip(outputnames0, out0))
-    onnx_outputs.append(out0)
-    del sess0
+    onnx_outputs:tp.List[tp.Any] = []
 
     sess1        = ort.InferenceSession(exported.onnx_bytes)
     outputnames1 = [o.name for o in sess1.get_outputs()]
     inputnames1  = [i.name for i in sess1.get_inputs()]
-    for i in range(3):
-        prev_out     = onnx_outputs[-1]
-        inputs1      = {k:prev_out[f'{k}.output'] for k in inputnames1 if k not in ['x', 't']}
+    for i in range(4):
+        if len(onnx_outputs):
+            prev_out = onnx_outputs[-1]
+            inputs1  = {k:prev_out[f'{k}.output'] for k in inputnames1 if k not in ['x', 't']}
+        else:
+            inputs1  = exported.inputfeed
         inputs1.update(x = x.numpy(), t = t.numpy())
         out1        = sess1.run(outputnames1, inputs1)
         out1        = dict(zip(outputnames1, out1))
         onnx_outputs.append(out1)
     
-    print('onnx y0:   ', out0['y'].sum(-1).sum(-1).ravel())
-    print('onnx loss0:', out0['loss'])
-    print('onnx y1:   ', out1['y'].sum(-1).sum(-1).ravel())
-    print('onnx loss1:', out1['loss'])
+    for i,out_i in enumerate(onnx_outputs):
+        print(f'onnx y{i}:   ', out_i['y'].sum(-1).sum(-1).ravel())
+        print(f'onnx loss{i}:', out_i['loss'])
     print('------------')
 
 
     torch_outputs = []
-    optim = torch.optim.SGD(
-        m.parameters(), lr=0.05, momentum=0.9, weight_decay=1e-4, dampening=0.0, nesterov=False
-    )
+    optim = testitem.optim(m.parameters())
     for i in range(len(onnx_outputs)):
         y    = m.train()(x)
         print(f'torch y{i}:', y.detach().numpy().sum(-1).sum(-1).ravel())
@@ -201,11 +207,10 @@ def test_export(testitem:TestItem, desc:str):
             {f'{k}.output':p.data.numpy().copy() for k,p in reversed(m.state_dict().items())}
         )
         torch_outputs.append(torch_out)
-        print('=================')
     
     print('*'*50)
-    print(out0.keys())
-    print(torch_outputs[0].keys())
+    #print(out0.keys())
+    #print(torch_outputs[0].keys())
 
     for i,[torch_out_i, onnx_out_i] in enumerate(zip(torch_outputs, onnx_outputs)):
         print(f'>>>>>>>>>> train_step: {i} <<<<<<<<<<')
