@@ -150,10 +150,10 @@ def start_training_from_cli_args(
     } | fit_kw
 
     model.start_training(
-        trainsplit, 
-        valsplit,
-        task_kw = task_kw,
-        fit_kw  = fit_kw,
+        trainsplit = trainsplit, 
+        valsplit   = valsplit,
+        task_kw    = task_kw,
+        fit_kw     = fit_kw,
     )
     model.save(os.path.join(checkpointdir, f'{name}.pt.zip'))
     return True
