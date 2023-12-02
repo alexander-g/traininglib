@@ -60,12 +60,12 @@ def ensure_imagetensor(x:str|np.ndarray|torch.Tensor) -> torch.Tensor:
     elif not torch.is_tensor(x):
         t = torchvision.transforms.ToTensor()(x).float()
     else:
-        t = x
+        t = tp.cast(torch.Tensor, x)
     return t
 
 def resize_tensor(
     x:    torch.Tensor, 
-    size: int|tp.Tuple[int,int], 
+    size: int|tp.Tuple[int,int]|torch.Size,
     mode: tp.Literal['nearest', 'bilinear'],
     align_corners: bool|None = None,
 ) -> torch.Tensor:

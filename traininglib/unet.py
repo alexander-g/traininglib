@@ -4,6 +4,7 @@ import numpy as np
 import torch, torchvision
 from torchvision.models._utils import IntermediateLayerGetter
 
+from .datalib import resize_tensor
 
 class UNet(torch.nn.Module):
     '''Backboned U-Net'''
@@ -15,12 +16,12 @@ class UNet(torch.nn.Module):
             inter_c        = inter_c or out_c
             self.conv1x1   = torch.nn.Conv2d(in_c, inter_c, 1)
             self.convblock = torch.nn.Sequential(
-                torch.nn.Conv2d(inter_c, out_c, 3, padding=1, bias=0),
+                torch.nn.Conv2d(inter_c, out_c, 3, padding=1, bias=False),
                 torch.nn.BatchNorm2d(out_c),
                 torch.nn.ReLU(),
             )
         def forward(self, x:torch.Tensor, skip_x:torch.Tensor, relu=True) -> torch.Tensor:
-            x = torch.nn.functional.interpolate(x, skip_x.shape[2:])   #TODO? mode='bilinear
+            x = resize_tensor(x, skip_x.shape[-2:], mode='nearest')   #TODO? mode='bilinear
             x = torch.cat([x, skip_x], dim=1)
             x = self.conv1x1(x)
             x = self.convblock(x)

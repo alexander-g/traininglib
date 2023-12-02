@@ -117,7 +117,6 @@ def export_model_as_functional_training_onnx(
     for torch_op, manual_op in decompositions.items():
         replace_op_type_with_custom_function(train_step_tx, torch_op, manual_op)
     cleanup_graph(train_step_tx)
-    print(train_step_tx)
 
     if _debug:
         raise NotImplementedError('TODO')
@@ -464,6 +463,8 @@ def replace_inplace_ops(gm:torch.fx.graph_module.GraphModule, bn:bool=False):
         #decompositions[torch.ops.aten.native_batch_norm.default] = functional_batch_norm
         decompositions[torch.ops.aten.native_batch_norm.default] \
             = torch.ops.aten._native_batch_norm_legit_functional.default
+        decompositions[torch.ops.aten._native_batch_norm_legit.default] \
+            = torch.ops.aten._native_batch_norm_legit_functional.default
     for torch_op, manual_op in decompositions.items():
         replace_op_type_with_custom_function(gm, torch_op, manual_op)
     
@@ -657,6 +658,72 @@ def aten_bnfunc(
 
 torch.onnx.register_custom_op_symbolic(
     'aten::_native_batch_norm_legit_functional', aten_bnfunc, opset_version=16
+)
+
+
+@onnxscript.script() # type: ignore [arg-type]
+def aten_upsample_nearest2d_backward_with_constants(
+    grad_out, outputsize, inputsize, indices0, repeats0, indices1, repeats1
+):
+    z = op.ConstantOfShape(outputsize) # value implicitly zero
+
+    indices0 = op.Tile(indices0, repeats0)
+    z0 = op.ScatterElements(z, indices0, grad_out, axis=3, reduction='add')
+
+    indices1 = op.Tile(indices1, repeats1)
+    z1 = op.ScatterElements(z, indices1, z0, axis=2, reduction='add')
+
+    sliced = op.Slice(z1, starts=[0,0,0,0], ends=inputsize)
+
+    return sliced
+
+
+def onnx_upsample_nearest2d_backward(
+    g:GraphContext, 
+    grad_out:torch.Value,
+    outputsize:torch.Value,
+    inputsize:torch.Value,
+    scales_h:torch.Value,
+    scales_w:torch.Value,
+):
+    assert isinstance(scales_h.type(), torch.NoneType), NotImplementedError()
+    assert isinstance(scales_w.type(), torch.NoneType), NotImplementedError()
+    outputsize_t = outputsize.node().t('value')
+    inputsize_t  = inputsize.node().t('value')
+
+    outputsize_full = torch.cat([inputsize_t[:2], outputsize_t])
+    outputsize_full_op = g.op('Constant', value_t=outputsize_full)
+
+    ixs0 = np.arange(
+        0, inputsize_t[-1], inputsize_t[-1]/outputsize_t[-1]
+    ).astype(int)[None,None,None]
+    ixs0_const = g.op('Constant', value_t=torch.as_tensor(ixs0))
+    repeats0  = list(inputsize_t)[:2]+[outputsize_t[-2], 1]
+    repeats0_const = g.op('Constant', value_t=torch.as_tensor(repeats0))
+
+    ixs1 = np.arange(
+        0, inputsize_t[-2], inputsize_t[-2]/outputsize_t[-2]
+    ).astype(int)[None,None,:,None]
+    ixs1_const = g.op('Constant', value_t=torch.as_tensor(ixs1))
+    repeats1  = list(inputsize_t)[:2]+[1,outputsize_t[-1]]
+    repeats1_const = g.op('Constant', value_t=torch.as_tensor(repeats1))
+
+    output_type = grad_out.type().with_sizes(list(inputsize_t))
+    return g.onnxscript_op(
+        aten_upsample_nearest2d_backward_with_constants, 
+        grad_out, 
+        outputsize_full_op, 
+        inputsize, 
+        ixs0_const, 
+        repeats0_const, 
+        ixs1_const, 
+        repeats1_const
+    ).setType(output_type)
+
+torch.onnx.register_custom_op_symbolic(
+    'aten::upsample_nearest2d_backward', 
+    onnx_upsample_nearest2d_backward, 
+    opset_version=16
 )
 
 
