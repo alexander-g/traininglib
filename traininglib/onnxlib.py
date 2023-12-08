@@ -32,7 +32,7 @@ class DebugInfo(tp.NamedTuple):
     train_step_tx_unmodified:   tp.Callable
 
 
-class ExportedONNX(tp.NamedTuple):
+class ExportedTrainingONNX(tp.NamedTuple):
     #training steps in onnx format
     onnx_bytes:   bytes
 
@@ -52,7 +52,7 @@ def export_model_as_functional_training_onnx(
     optimizer: torch.optim.Optimizer,
     *,
     _debug:    bool = False,
-) -> ExportedONNX:
+) -> ExportedTrainingONNX:
     optim = initialize_optimizer(optimizer)
     sd = {k:v.clone() for k,v in dict(m.state_dict()).items()}
     
@@ -63,8 +63,13 @@ def export_model_as_functional_training_onnx(
         t:           torch.Tensor,
     ) -> tp.Tuple[torch.Tensor, torch.Tensor]:
         sd     = sd_grads | sd_nongrads
+        _set_marker('submodule:forward')
         y      = torch.func.functional_call(m, sd, x, strict=True)
+
+        _set_marker('submodule:loss')
         loss   = loss_func(y, t)
+        
+        _set_marker('submodule:backward')
         return loss, y
 
     #gradient computation function
@@ -78,6 +83,8 @@ def export_model_as_functional_training_onnx(
     ):
         sd_grads, sd_nongrads = filter_nongrad_values(sd)
         gradients, (loss, y)  = grad_f(sd_grads, sd_nongrads, x, t)
+        
+        _set_marker('submodule:optimizer')
         new_sd_grads, buffers = run_optimizer(
             gradients, sd_grads, buffers, optim.func, optim.hyper_params
         )
@@ -112,7 +119,7 @@ def export_model_as_functional_training_onnx(
     train_step_tx = make_fx(train_step, tracing_mode='fake')(
         sd, x, t, optim.buffers
     )
-    rename_all_nodes(train_step_tx, prefix='main')
+    #rename_all_nodes(train_step_tx, prefix='main')
     replace_inplace_ops(train_step_tx, bn=True)
     for torch_op, manual_op in decompositions.items():
         replace_op_type_with_custom_function(train_step_tx, torch_op, manual_op)
@@ -131,6 +138,9 @@ def export_model_as_functional_training_onnx(
         # replace_inplace_ops(train_step_tx_unmodified, bn=True)
         # cleanup_graph(train_step_tx_unmodified)
         # train_step_tx_unmodified = _return_all_nodes(train_step_tx_unmodified)
+
+    #NOTE: disabled because onnx export segfaults on large(-ish) models
+    #create_submodules_from_markers(train_step_tx)
 
     #TODO: fake buffers
     _out = train_step_tx(sd, x, t, optim.buffers)
@@ -163,6 +173,9 @@ def export_model_as_functional_training_onnx(
         output_names = outputnames,
         do_constant_folding = False,
         opset_version       = 16,
+        export_modules_as_functions = {
+            type(m) for m in list(train_step_tx.modules())[1:]
+        },
     )
     onnx_bytes = buf.getvalue()
 
@@ -170,7 +183,7 @@ def export_model_as_functional_training_onnx(
     inputfeed = inputfeed | buffers_to_onnx_input(optim.buffers)
 
     if not _debug:
-        return ExportedONNX(onnx_bytes, inputfeed)
+        return ExportedTrainingONNX(onnx_bytes, inputfeed)
     else:
         raise NotImplemented('TODO')
         # return ExportedONNX(
@@ -437,6 +450,7 @@ def replace_op_type_with_custom_function(
             return custom_function(*a, **kw)
     modulename = custom_function.__name__
     custom_module.__name__ = modulename
+    custom_module.__module__ = modulename
 
     gm.add_submodule(modulename, custom_module())
     for node in gm.graph.nodes:
@@ -448,7 +462,6 @@ def replace_op_type_with_custom_function(
             if reuse_name:
                 new_node.name = node.name
     gm.graph.lint()
-    gm.recompile()
 
 
 
@@ -490,12 +503,11 @@ def replace_inplace_ops(gm:torch.fx.graph_module.GraphModule, bn:bool=False):
     outputnode.replace_all_uses_with(new_outputnode)
     gm.graph.erase_node(outputnode)
     gm.graph.lint()
-    gm.recompile()
 
 
 
 
-@onnxscript.script()
+@onnxscript.script() # type: ignore
 def batch_norm_functional(
     x:           FLOAT, 
     weight:      FLOAT, 
@@ -508,13 +520,13 @@ def batch_norm_functional(
     N:           float,  # x.shape[0] * x.shape[2] * x.shape[3], fixed shape
 ):
     # cast to float64, pytorch seems to do it too internally
-    x = op.Cast(x, to=onnx.TensorProto.DOUBLE)
+    x = op.Cast(x, to=onnx.TensorProto.DOUBLE) # type: ignore [assignment]
 
     reduction_axes = [0,2,3]
     x_mean         = op.ReduceMean(x, axes=[0,2,3])  #NOTE using reduction_axes gives error
-    x_norm         = (x - x_mean)
+    x_norm         = (x - x_mean) # type: ignore
     x_norm_squared = x_norm * x_norm
-    x_norm_sqsum   = op.ReduceSum(x_norm_squared, axes=reduction_axes)
+    x_norm_sqsum   = op.ReduceSum(x_norm_squared, axes=reduction_axes) # type: ignore
     x_biased_var   = x_norm_sqsum / N
     x_biased_std   = op.Sqrt(x_biased_var + eps)
     rstd           = op.Div(1.0, x_biased_std)
@@ -525,24 +537,24 @@ def batch_norm_functional(
     #more stable (i think, actually no difference)
     output = x_norm / x_biased_std
     
-    x_mean       = op.Cast(x_mean,       to=onnx.TensorProto.FLOAT)
+    x_mean       = op.Cast(x_mean,       to=onnx.TensorProto.FLOAT) # type: ignore
     x_norm_sqsum = op.Cast(x_norm_sqsum, to=onnx.TensorProto.FLOAT)
     output       = op.Cast(output,       to=onnx.TensorProto.FLOAT)
     rstd         = op.Cast(rstd,         to=onnx.TensorProto.FLOAT)
 
-    weight = op.Unsqueeze(weight, axes=[-2,-1])
-    bias   = op.Unsqueeze(bias,   axes=[-2,-1])
+    weight = op.Unsqueeze(weight, axes=[-2,-1]) # type: ignore
+    bias   = op.Unsqueeze(bias,   axes=[-2,-1]) # type: ignore
     output = output * weight + bias
 
-    save_mean = op.Squeeze(x_mean, axes=reduction_axes)
-    save_rstd = op.Squeeze(rstd,   axes=reduction_axes)
+    save_mean = op.Squeeze(x_mean, axes=reduction_axes)  # type: ignore
+    save_rstd = op.Squeeze(rstd,   axes=reduction_axes)  # type: ignore
 
     N_unbiased       = N - 1.0
     unbiased_var     = x_norm_sqsum / N_unbiased
-    unbiased_var_sqz = op.Squeeze(unbiased_var, axes=reduction_axes)
+    unbiased_var_sqz = op.Squeeze(unbiased_var, axes=reduction_axes) # type: ignore
     inv_momentum     = 1.0 - momentum
-    new_running_mean = momentum * save_mean        + inv_momentum * running_mean
-    new_running_var  = momentum * unbiased_var_sqz + inv_momentum * running_var
+    new_running_mean = momentum * save_mean        + inv_momentum * running_mean # type: ignore
+    new_running_var  = momentum * unbiased_var_sqz + inv_momentum * running_var  # type: ignore
 
     return output, save_mean, save_rstd, new_running_mean, new_running_var
 
@@ -635,7 +647,7 @@ def aten_bnfunc(
 ):
     momentum_value = float(momentum.node().t('value'))
     eps_value      = float(eps.node().t('value'))
-    x_sizes        = x.type().sizes()
+    x_sizes        = x.type().sizes()  # type: ignore [attr-defined]
     N              = int(x_sizes[0] * x_sizes[2] * x_sizes[3])
     y, sm,sv, nrm,nrv = g.onnxscript_op(
         batch_norm_functional, 
@@ -736,7 +748,6 @@ def cleanup_graph(gm:torch.fx.graph_module.GraphModule):
             node.replace_all_uses_with(inputnode)
             gm.graph.erase_node(node)
     gm.graph.lint()
-    gm.recompile()
 
 
 def replace_all_squeeze_dims(gm:torch.fx.graph_module.GraphModule):
@@ -753,12 +764,123 @@ def replace_all_squeeze_dims(gm:torch.fx.graph_module.GraphModule):
                 node.replace_all_uses_with(new_squeeze)
             graph.erase_node(node)
     graph.lint()
-    gm.recompile()
 
 def rename_all_nodes(gm:torch.fx.graph_module.GraphModule, prefix:str):
     for node in gm.graph.nodes:
         node.name = f'{prefix}.{node.name}'
 
+
+
+def _set_marker(name:str) -> None:
+    '''Create a constant value that will be picked up by `make_fx()` 
+       and used for post-processing the fx graph later '''
+    torch.ByteTensor(list(name.encode('utf8')))
+
+
+def rename_all_nodes_from_markers(gm:torch.fx.graph_module.GraphModule):
+    '''Rename all graph nodes by adding a prefix previously set by _set_marker().
+       Additionally, remove the markers.'''
+    current_marker:str|None = None
+    for node in gm.graph.nodes:
+        if node.target == torch.ops.aten.lift_fresh_copy.default:
+            constant = node.args[0]
+            marker_as_tensor = getattr(gm, constant.target)
+            current_marker = marker_as_tensor.numpy().tobytes().decode('utf8')
+            gm.graph.erase_node(node)
+            gm.graph.erase_node(constant)
+        elif current_marker is not None:
+            node.name = f'{current_marker}_{node.name}'
+    gm.graph.lint()
+    #gm.recompile()
+
+def create_submodules_from_markers(gm:torch.fx.graph_module.GraphModule):
+    '''Move graph nodes to functions according to markers set by _set_marker().
+       Also remove the markers.'''
+    current_marker:str|None = None
+    marked_nodes:tp.Dict[str, tp.List[torch.fx.Node]] = {}
+
+    for node in gm.graph.nodes:
+        if node.target == 'output':
+            continue
+            
+        if node.target == torch.ops.aten.lift_fresh_copy.default:
+            constant = node.args[0]
+            marker_as_tensor = getattr(gm, constant.target)
+            current_marker = marker_as_tensor.numpy().tobytes().decode('utf8')
+            gm.graph.erase_node(node)
+            gm.graph.erase_node(constant)
+            continue
+        
+        if current_marker is not None:
+            marked_nodes[current_marker] \
+                = marked_nodes.get(current_marker, []) + [node]
+    
+    gm.graph.lint()
+    gm.recompile()
+    for marker, nodes in marked_nodes.items():
+        nodes = [n for n in nodes if n in gm.graph.nodes]
+        move_nodes_to_submodule(gm, nodes, marker)
+    gm.graph.lint()
+    gm.recompile()
+
+def filter_nodes_with_external_users(
+    nodes:tp.List[torch.fx.Node]
+) -> tp.List[torch.fx.Node]:
+    '''Return nodes that have users that are not in `nodes`'''
+    nodes_with_external_users:tp.List[torch.fx.Node] = []
+    for n in nodes:
+        for user in n.users:
+            if user not in nodes:
+                nodes_with_external_users.append(n)
+                break
+    return nodes_with_external_users
+
+def move_nodes_to_submodule(
+    gm:torch.fx.graph_module.GraphModule, nodes:tp.List[torch.fx.Node], name:str
+):
+    '''Extract a list of nodes from graph and move them into an own submodule'''
+    new_graph = torch.fx.Graph()
+    #mapping inputs of new_graph to nodes in gm
+    new_graph_inputs:tp.Dict[torch.fx.Node, torch.fx.Node] = {}
+    #mapping nodes in gm to nodes in new_graph
+    val_remap:tp.Dict[torch.fx.Node, torch.fx.Node] = {}
+    
+    def remap_or_placeholder(n:torch.fx.Node) -> torch.fx.Node:
+        if n in val_remap:
+            return val_remap[n]
+        placeholder  = new_graph.placeholder(n.name)
+        val_remap[n] = placeholder
+        new_graph_inputs[placeholder] = n
+        return placeholder
+    
+    #copy nodes into new graph
+    for n in nodes:
+        new_n = new_graph.node_copy(n, arg_transform=remap_or_placeholder)
+        val_remap[n] = new_n
+    #create an output node in new graph
+    old_output_nodes = filter_nodes_with_external_users(nodes)
+    new_output_nodes = [val_remap[n] for n in old_output_nodes]
+    new_graph.output(new_output_nodes)
+
+    #add submodule into old graph
+    submodule = torch.fx.graph_module.GraphModule(gm, new_graph, name)
+    submodule.__class__.__module__ = name
+    gm.add_submodule(name, submodule)
+    with gm.graph.inserting_before(nodes[0]):
+        #call submodule
+        call_node = gm.graph.call_module(name, tuple(new_graph_inputs.values()))
+        #replace output nodes in old graph
+        for i, old_out_n in enumerate(old_output_nodes):
+            new_out_n = gm.graph.call_function(operator.getitem, (call_node, i))
+            old_out_n.replace_all_uses_with(new_out_n)
+
+    #remove old nodes
+    for n in nodes[::-1]:
+        gm.graph.erase_node(n)
+    
+    gm.graph.lint()
+    #gm.recompile()
+    return gm
 
 
 def _return_all_nodes(gm:torch.fx.graph_module.GraphModule) -> torch.fx.graph_module.GraphModule:
