@@ -107,11 +107,12 @@ def export_model_as_functional_inference_onnx(
         output_names = outputnames,
         do_constant_folding = False,
         opset_version       = 16,
-        export_modules_as_functions = {
-            type(m) for m in list(fx.modules())[1:]
-        },
+        #export_modules_as_functions = {
+        #    type(m) for m in list(fx.modules())[1:]
+        #},
     )
     onnx_bytes = buf.getvalue()
+    inputnames = remove_non_inference_inputnames(inputnames)
     inputfeed  = state_dict_to_onnx_input(sd, inputnames)
     return ExportedInferenceONNX(onnx_bytes, inputfeed)
 
@@ -227,9 +228,10 @@ def export_model_as_functional_training_onnx(
         output_names = outputnames,
         do_constant_folding = False,
         opset_version       = 16,
-        export_modules_as_functions = {
-            type(m) for m in list(train_step_tx.modules())[1:]
-        },
+        #NOTE: this messes up outputnames, don't use for now
+        #export_modules_as_functions = {
+        #    type(m) for m in list(train_step_tx.modules())[1:]
+        #},
     )
     onnx_bytes = buf.getvalue()
 
@@ -376,6 +378,12 @@ def filter_nongrad_values(sd:StateDict) -> tp.Tuple[StateDict, StateDict]:
         k:v for k,v in sd.items() if k not in sd_grad
     }
     return sd_grad, sd_nongrad 
+
+def remove_non_inference_inputnames(inputnames:tp.List[str]) -> tp.List[str]:
+    to_remove = ['num_batches_tracked']
+    for pattern in to_remove:
+        inputnames = [n for n in inputnames if pattern not in n]
+    return inputnames
 
 
 def dilate(x:torch.Tensor, dilation:tp.Tuple[int,int]) -> torch.Tensor:
@@ -559,10 +567,18 @@ def replace_inplace_ops(gm:torch.fx.graph_module.GraphModule, bn:bool=False):
     gm.graph.lint()
 
 
+def batch_norm_functional_no_training(
+    x, weight, bias, running_mean, running_var, momentum, eps,
+):
+    training   = False
+    functional = True
+    return torch._decomp.decompositions.native_batch_norm_helper(
+        x, weight, bias, running_mean, running_var, training, momentum, eps, functional
+    )
 
 
 @onnxscript.script() # type: ignore
-def batch_norm_functional(
+def batch_norm_functional_training(
     x:           FLOAT, 
     weight:      FLOAT, 
     bias:        FLOAT, 
@@ -704,7 +720,7 @@ def aten_bnfunc(
     x_sizes        = x.type().sizes()  # type: ignore [attr-defined]
     N              = int(x_sizes[0] * x_sizes[2] * x_sizes[3])
     y, sm,sv, nrm,nrv = g.onnxscript_op(
-        batch_norm_functional, 
+        batch_norm_functional_training, 
         x, 
         w, 
         b, 
@@ -802,6 +818,7 @@ def cleanup_graph(gm:torch.fx.graph_module.GraphModule):
             node.replace_all_uses_with(inputnode)
             gm.graph.erase_node(node)
     gm.graph.lint()
+    gm.recompile()
 
 
 def replace_all_squeeze_dims(gm:torch.fx.graph_module.GraphModule):
@@ -845,7 +862,6 @@ def rename_all_nodes_from_markers(gm:torch.fx.graph_module.GraphModule):
         elif current_marker is not None:
             node.name = f'{current_marker}_{node.name}'
     gm.graph.lint()
-    #gm.recompile()
 
 def create_submodules_from_markers(gm:torch.fx.graph_module.GraphModule):
     '''Move graph nodes to functions according to markers set by _set_marker().
@@ -933,7 +949,6 @@ def move_nodes_to_submodule(
         gm.graph.erase_node(n)
     
     gm.graph.lint()
-    #gm.recompile()
     return gm
 
 
@@ -985,6 +1000,8 @@ def _return_all_nodes(gm:torch.fx.graph_module.GraphModule) -> torch.fx.graph_mo
 
 decompositions = {
     torch.ops.aten.convolution_backward.default: manual_convolution_backward,
+    torch.ops.aten._native_batch_norm_legit_no_training.default:
+        batch_norm_functional_no_training,
     torch.ops.aten.max_pool2d_with_indices_backward.default: 
         manual_max_pool2d_with_indices_backward,
     torch.ops.aten.native_batch_norm_backward.default: 
@@ -1001,4 +1018,6 @@ decompositions = {
         torch._decomp.decompositions.hardswish_backward,
     torch.ops.aten.hardsigmoid_backward.default:
         torch._decomp.decompositions.hardsigmoid_backward,
+    torch.ops.aten.lerp_.Scalar:
+        torch.ops.aten.lerp.Scalar,
 }

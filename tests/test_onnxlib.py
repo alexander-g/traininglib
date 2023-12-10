@@ -162,7 +162,9 @@ def test_training(testitem:TestItem, desc:str):
     for i in range(4):
         if len(onnx_outputs):
             prev_out = onnx_outputs[-1]
-            inputs1  = {k:prev_out[f'{k}.output'] for k in inputnames1 if k not in ['x', 't']}
+            inputs1  = {
+                k:prev_out[f'{k}.output'] for k in inputnames1 if k not in ['x', 't']
+            }
         else:
             inputs1  = exported.inputfeed
         inputs1.update(x = x.numpy(), t = t.numpy())
