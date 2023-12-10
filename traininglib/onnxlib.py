@@ -1,12 +1,16 @@
 import typing as tp
 import torch
 import numpy as np
+
+import os
 import io
+import json
 import copy
 import operator
 import sys
 import warnings
 warnings.simplefilter('ignore', UserWarning)  #pytorch throws too many of those
+import zipfile
 
 from torch.fx.experimental.proxy_tensor import make_fx
 
@@ -23,6 +27,36 @@ from torch.optim.adamw import adamw     # type: ignore
 
 StateDict  = tp.Dict[str, torch.nn.Parameter]
 TensorDict = tp.Dict[str, torch.Tensor]
+
+
+class ExportedInferenceONNX(tp.NamedTuple):
+    #inference step in onnx format
+    onnx_bytes: bytes
+    #onnx inputfeed, i.e. state dict, excluding `x`
+    inputfeed:  tp.Dict[str, np.ndarray]
+
+    def save_as_zipfile(self, path:str, x:np.ndarray) -> None:
+        if not path.endswith('.pt.zip'):
+            path = f'{path}.pt.zip'
+        base = os.path.splitext(os.path.basename(path))[0]
+        with zipfile.ZipFile(path, 'w') as zipf:
+            zipf.writestr(f'{base}/onnx/inference.onnx', self.onnx_bytes)
+            schema = {}
+            for i,(k,v) in enumerate(self.inputfeed.items()):
+                vpath = f'{base}/.data/{i}.storage'
+                zipf.writestr(vpath, v.tobytes())
+                schema[k] = {
+                    'shape': list(v.shape),
+                    'dtype': str(v.dtype),
+                    'path':  vpath,
+                }
+            schema['x'] = {
+                'shape': list(x.shape),
+                'dtype': str(x.dtype),
+            }
+            zipf.writestr(
+                f'{base}/onnx/inference.schema.json', json.dumps(schema, indent=2)
+            )
 
 
 class DebugInfo(tp.NamedTuple):
@@ -42,6 +76,44 @@ class ExportedTrainingONNX(tp.NamedTuple):
     #only if _debug == True
     debug: DebugInfo|None = None
 
+
+
+def export_model_as_functional_inference_onnx(
+    m: torch.nn.Module,
+    x: torch.Tensor,
+) -> ExportedInferenceONNX:
+    m.eval()
+    sd = {k:v.clone() for k,v in dict(m.state_dict()).items()}
+    
+    def forward_f(sd:StateDict, x:torch.Tensor) -> torch.Tensor:
+        return torch.func.functional_call(m, sd, x, strict=True)
+    
+    fx = make_fx(forward_f, tracing_mode='fake')(sd, x)
+    replace_inplace_ops(fx, bn=True)
+    for torch_op, manual_op in decompositions.items():
+        replace_op_type_with_custom_function(fx, torch_op, manual_op)
+    cleanup_graph(fx)
+
+    inputnames  = list(sd.keys()) + ['x']
+    outputnames = ['y']
+
+    buf = io.BytesIO()
+    torch.onnx.export(
+        fx, 
+        {'sd':sd, 'x':x},
+        buf, 
+        training     = torch.onnx.TrainingMode.EVAL,
+        input_names  = inputnames, 
+        output_names = outputnames,
+        do_constant_folding = False,
+        opset_version       = 16,
+        export_modules_as_functions = {
+            type(m) for m in list(fx.modules())[1:]
+        },
+    )
+    onnx_bytes = buf.getvalue()
+    inputfeed  = state_dict_to_onnx_input(sd, inputnames)
+    return ExportedInferenceONNX(onnx_bytes, inputfeed)
 
 
 def export_model_as_functional_training_onnx(
@@ -97,25 +169,7 @@ def export_model_as_functional_training_onnx(
             'y':          y,
         }
     
-    decompositions = {
-        torch.ops.aten.convolution_backward.default: manual_convolution_backward,
-        torch.ops.aten.max_pool2d_with_indices_backward.default: 
-            manual_max_pool2d_with_indices_backward,
-        torch.ops.aten.native_batch_norm_backward.default: 
-            torch._decomp.decompositions.native_batch_norm_backward,
-        torch.ops.aten.nll_loss_forward.default: 
-            torch._decomp.decompositions.nll_loss_forward,
-        torch.ops.aten.nll_loss_backward.default: 
-            torch._decomp.decompositions.nll_loss_backward,
-        torch.ops.aten._log_softmax_backward_data.default:
-            torch._decomp.decompositions._log_softmax_backward_data,
-        #inplace
-        torch.ops.aten.hardswish_.default: torch.ops.aten.hardswish,
-        torch.ops.aten.hardswish_backward.default:
-           torch._decomp.decompositions.hardswish_backward,
-        torch.ops.aten.hardsigmoid_backward.default:
-            torch._decomp.decompositions.hardsigmoid_backward,
-    }
+    
     train_step_tx = make_fx(train_step, tracing_mode='fake')(
         sd, x, t, optim.buffers
     )
@@ -927,3 +981,24 @@ def _return_all_nodes(gm:torch.fx.graph_module.GraphModule) -> torch.fx.graph_mo
     gm.recompile()
     return gm
 
+
+
+decompositions = {
+    torch.ops.aten.convolution_backward.default: manual_convolution_backward,
+    torch.ops.aten.max_pool2d_with_indices_backward.default: 
+        manual_max_pool2d_with_indices_backward,
+    torch.ops.aten.native_batch_norm_backward.default: 
+        torch._decomp.decompositions.native_batch_norm_backward,
+    torch.ops.aten.nll_loss_forward.default: 
+        torch._decomp.decompositions.nll_loss_forward,
+    torch.ops.aten.nll_loss_backward.default: 
+        torch._decomp.decompositions.nll_loss_backward,
+    torch.ops.aten._log_softmax_backward_data.default:
+        torch._decomp.decompositions._log_softmax_backward_data,
+    #inplace
+    torch.ops.aten.hardswish_.default: torch.ops.aten.hardswish,
+    torch.ops.aten.hardswish_backward.default:
+        torch._decomp.decompositions.hardswish_backward,
+    torch.ops.aten.hardsigmoid_backward.default:
+        torch._decomp.decompositions.hardsigmoid_backward,
+}

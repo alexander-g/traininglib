@@ -140,8 +140,8 @@ testdata: tp.List[tp.Tuple[TestItem, str]] = [
 
 
 @pytest.mark.parametrize("testitem,desc", testdata)
-def test_export(testitem:TestItem, desc:str):
-    print(f'==========TEST START: {desc}==========')
+def test_training(testitem:TestItem, desc:str):
+    print(f'==========TRAINING TEST: {desc}==========')
 
     m = testitem.module
     x = testitem.x
@@ -228,6 +228,29 @@ def test_export(testitem:TestItem, desc:str):
 
     print('@'*50)
     #assert 0
+
+
+@pytest.mark.parametrize("testitem,desc", testdata)
+def test_inference(testitem:TestItem, desc:str):
+    print(f'==========INFERENCE TEST: {desc}==========')
+    m = testitem.module
+    x = testitem.x
+
+    exported = onnxlib.export_model_as_functional_inference_onnx(m, x)
+    session  = ort.InferenceSession(exported.onnx_bytes)
+
+    outputnames = [o.name for o in session.get_outputs()]
+    inputfeed   = exported.inputfeed | {'x':x.numpy()}
+    onnx_output = session.run(outputnames, inputfeed)
+
+    torch_output = m.eval().requires_grad_(False)(x).numpy()
+
+    diff = np.abs(onnx_output - torch_output).max()
+    print('diff:', diff)
+    assert np.allclose(onnx_output, torch_output)
+
+
+
 
 
 conv_testdata = [
