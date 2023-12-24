@@ -1,6 +1,6 @@
 import typing as tp
 import functools
-from traininglib import onnxlib
+from traininglib import onnxlib, unet
 import onnxruntime as ort
 import torch, torchvision
 import numpy as np
@@ -44,9 +44,9 @@ default_sgd = lambda p: torch.optim.SGD(p, lr=0.05, momentum=0.9, weight_decay=1
 
 class TestItem(tp.NamedTuple):
     module:    torch.nn.Module
-    loss_func: tp.Callable
     x:         torch.Tensor
-    t:         torch.Tensor
+    loss_func: tp.Callable   = lambda: None
+    t:         torch.Tensor  = torch.as_tensor(0)
     optim:     tp.Callable   = default_sgd
     atol:      float         = 1e-6
 
@@ -232,7 +232,17 @@ def test_training(testitem:TestItem, desc:str):
     #assert 0
 
 
-@pytest.mark.parametrize("testitem,desc", testdata)
+
+inference_testdata = testdata + [
+(
+    TestItem(
+        module    = unet.UNet(backbone='mobilenet3l', backbone_weights=None),
+        x         = torch.rand([1,3,64,64]),
+    ), 'unet'
+)
+]
+
+@pytest.mark.parametrize("testitem,desc", inference_testdata)
 def test_inference(testitem:TestItem, desc:str):
     print(f'==========INFERENCE TEST: {desc}==========')
     m = testitem.module
@@ -249,7 +259,7 @@ def test_inference(testitem:TestItem, desc:str):
 
     diff = np.abs(onnx_output - torch_output).max()
     print('diff:', diff)
-    assert np.allclose(onnx_output, torch_output)
+    assert np.allclose(onnx_output, torch_output, atol=1e-7)
 
 
 

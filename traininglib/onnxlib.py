@@ -25,8 +25,9 @@ from torch.optim.sgd import sgd         # type: ignore
 from torch.optim.adamw import adamw     # type: ignore
 
 
-StateDict  = tp.Dict[str, torch.nn.Parameter]
 TensorDict = tp.Dict[str, torch.Tensor]
+#StateDict  = tp.Dict[str, torch.nn.Parameter]
+StateDict  = TensorDict
 
 
 class ExportedInferenceONNX(tp.NamedTuple):
@@ -161,7 +162,7 @@ def export_model_as_functional_training_onnx(
         new_sd_grads, buffers = run_optimizer(
             gradients, sd_grads, buffers, optim.func, optim.hyper_params
         )
-        new_sd: StateDict     = new_sd_grads | sd_nongrads
+        new_sd: StateDict = new_sd_grads | sd_nongrads
         return {
             'state_dict': new_sd,
             'buffers':    buffers,
@@ -292,7 +293,6 @@ def initalize_sgd(optim:torch.optim.SGD) -> OptimizerState:
         func         = sgd,
         hyper_params = hyper_params,
         buffers      = buffers,
-
     )
 
 def initialize_adamw(optim:torch.optim.AdamW) -> OptimizerState:
@@ -352,13 +352,18 @@ def run_optimizer(
     return new_parameters, buffers   # type: ignore [return-value]
 
 
-def state_dict_to_onnx_input(sd:StateDict, onnxnames:tp.List[str]) -> tp.Dict[str, np.ndarray]:
+def state_dict_to_onnx_input(
+    sd:        StateDict, 
+    onnxnames: tp.List[str]
+) -> tp.Dict[str, np.ndarray]:
     inputs = { k:v.data.numpy() for k,v in sd.items() }
     inputs = { k:v for k,v in inputs.items() if k in onnxnames }
     assert len(inputs)
     return inputs
 
-def buffers_to_onnx_input(buffers:tp.Dict[str, tp.List[torch.Tensor]]) -> tp.Dict[str, np.ndarray]:
+def buffers_to_onnx_input(
+    buffers:tp.Dict[str, tp.List[torch.Tensor]]
+) -> tp.Dict[str, np.ndarray]:
     flat:tp.Dict[str, np.ndarray] = {}
     for bufname, bufs in buffers.items():
         for i,buf in enumerate(bufs):
@@ -370,6 +375,7 @@ def filter_nongrad_values(sd:StateDict) -> tp.Tuple[StateDict, StateDict]:
     '''Split a state dict into two parts, one with values that require a gradient 
        and are updated during backprop and the remaining ones'''
     #TODO: use .requires_grad
+    #TODO: or .named_parameters() / .named_buffers()
     names   = ['num_batches_tracked', 'running_mean', 'running_var']
     sd_grad = {
         k:v for k,v in sd.items() if not any([k.endswith(name) for name in names])
