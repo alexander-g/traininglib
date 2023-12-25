@@ -19,9 +19,6 @@ class ExportedTrainingStep(tp.NamedTuple):
 
 def export_model_for_training(
     m:         torch.nn.Module,
-    loss_func: LossFunction,
-    x:         torch.Tensor,
-    t:         torch.Tensor,
     optimizer: torch.optim.Optimizer,
 ):
     subclasstuple = error = subclass_via_tempfile(m)
@@ -29,7 +26,7 @@ def export_model_for_training(
         return error
     TrainStepClass, _tempdir = subclasstuple
     
-    trainstepmodule = TrainStepClass(m, loss_func, optimizer)
+    trainstepmodule = TrainStepClass(m, optimizer)
     trainstepscript = torch.jit.script(trainstepmodule)
 
     return ExportedTrainingStep(
@@ -43,12 +40,10 @@ class TrainStep(torch.nn.Module):
     def __init__(
         self, 
         module:    torch.nn.Module,
-        loss_func: LossFunction,
         optimizer: torch.optim.Optimizer,
     ):
         super().__init__()
         self.module    = torch.jit.script(module)
-        self.loss_func = loss_func
         self.params    = list(self.module.parameters())
         for p in self.params:
             p.grad = torch.zeros_like(p)
@@ -85,7 +80,6 @@ class TrainStep(torch.nn.Module):
         self.optimizer_fxt = torch.jit.trace(
             optimizer_step, (gradsdict, optimizerstate), strict=False
         )
-        print(self.optimizer_fxt.code)
 
         self._params_from_optimizerstate = torch.jit.trace(
             _unpack_params_from_optimizerstate, (optimizerstate,), strict=False
@@ -94,16 +88,21 @@ class TrainStep(torch.nn.Module):
         self.initial_optimizerstate = optimizerstate
         #self.forward = self._forward
     
-    def _prepare_forward(self, optimizerstate:TensorDict) -> None:
+    def _prepare_forward(self, optimizerstate:TensorDict) -> TensorList:
         # zero_grad() does not work with torchscript
         for g in self.grads:
             g[:] = torch.zeros_like(g)
         # set parameters from input
+        old_params = [p.clone() for p in self.params]
         new_params = self._params_from_optimizerstate(optimizerstate)
+        self._set_parameters(new_params)
+        return old_params
+    
+    def _set_parameters(self, new_params:TensorList) -> None:
         with torch.no_grad():
             for i,p in enumerate(self.params):
                 p[:] = new_params[i]
-    
+
     def _backward_step(self, loss:torch.Tensor, optimizerstate:TensorDict) -> TensorDict:
         loss.backward()
         grads = [
@@ -195,9 +194,11 @@ from traininglib.torchscriptlib import TrainStep as BaseTrainStep, TensorDict
 
 class TrainStep(BaseTrainStep):
     def forward(self, x:{x_type}, t:{t_type}, optimizerstate:TensorDict):
-        self._prepare_forward(optimizerstate)
+        old_params = self._prepare_forward(optimizerstate)
         loss = self.module(x, t)
-        return self._backward_step(loss, optimizerstate)
+        output = self._backward_step(loss, optimizerstate)
+        self._set_parameters(old_params)
+        return output
 '''
 
 

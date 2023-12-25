@@ -1,16 +1,10 @@
 import typing as tp
 import torch
+import numpy as np
 
 from traininglib import torchscriptlib
 
-
-
-def test_export_as_training():
-    m = torch.nn.Sequential(
-        torch.nn.Conv2d(3,5, kernel_size=3, padding=1),
-        torch.nn.Conv2d(5,1, kernel_size=1),
-    )
-    class M(torch.nn.Module):
+class ConvAndLoss(torch.nn.Module):
         def __init__(self, *a, **kw):
             super().__init__(*a, **kw)
             self.conv = torch.nn.Conv2d(3,1, kernel_size=3, padding=1)
@@ -20,28 +14,62 @@ def test_export_as_training():
             loss = torch.nn.functional.l1_loss(output, t)
             return loss
 
-        def _forward(self, x:tp.Dict[str, torch.Tensor]):
-            return self.conv(x['0']) + self.conv(x['1'])
-    m = M()
+def test_export_as_training():
+    m  = ConvAndLoss()
+    sd = {k:v.clone() for k,v in m.state_dict().items()}
 
     loss_func = torch.nn.functional.l1_loss
-    x         = torch.ones([1,3,10,10])
-    x = [x,x]
+    x_        = torch.ones([1,3,10,10])
+    x         = [x_, x_]
     t         = torch.zeros([1,1,10,10])
     optim     = torch.optim.SGD(m.parameters(), lr=0.0002, momentum=0.9)
-
-    exported  = torchscriptlib.export_model_for_training(
-        m, loss_func, x, t, optim
-    )
+    
+    exported  = torchscriptlib.export_model_for_training(m, optim)
     assert not isinstance(exported, Exception), exported
+    
+    assert state_dicts_allclose(sd, m.state_dict())
 
-    output = exported.torchscriptmodule(x, t, exported.optimizerstate)
-    print(output.keys())
+    n = 4
+    ts_outputs = [ exported.optimizerstate ]
+    for i in range(n):
+        output = exported.torchscriptmodule(x, t, ts_outputs[-1])
+        ts_outputs.append(output)
+    
+    assert state_dicts_allclose(sd, m.state_dict())
+    assert state_dicts_allclose(sd, exported.torchscriptmodule.state_dict())
 
-    for i in range(10):
-        output = exported.torchscriptmodule(x, t, output)
-        print(output['loss'].item())
-        print()
+
+
+    eager_outputs:tp.List[tp.Dict] = [{}]
+    for i in range(n):
+        m.zero_grad()
+        loss = m(x, t)
+        loss.backward()
+        optim.step()
+        eager_outputs.append( {'loss':loss.item()} )
+    print()
+
+    
+    for i,(ts_out, eager_out) in enumerate(zip(ts_outputs, eager_outputs)):
+        print(f'----- {i} -----')
+        keys = eager_out.keys()
+        for k in keys:
+            ts_val = np.asarray(ts_out[k].detach())
+            ea_val = np.asarray(eager_out[k])
+            diff   = np.abs(ts_val - ea_val).max()
+            print(k)
+            print(f'TorchScript: {ts_val.ravel()[-5:]}')
+            print(f'Eager Torch: {ea_val.ravel()[-5:]}')
+            print(f'Diff:        {diff}')
+
+            assert np.allclose(ts_val, ea_val)
+            print()
+
 
     #assert 0
 
+
+def state_dicts_allclose(sd0, sd1):
+    return all([
+        torch.allclose(p0,p1) for p0,p1 in zip(sd0.values(), sd1.values())
+    ])
