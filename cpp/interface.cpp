@@ -1,49 +1,15 @@
 #include <iostream>
 #include <fstream>
+#include <sstream>
 #include <stdexcept>
 #include <vector>
 
-#include <miniz.h>
+#include "miniz.hpp"
 #include <nlohmann/json.hpp>
 using json = nlohmann::json;
 
+#include <torch/script.h>
 
-class ZipArchive {
-    public:
-
-    ZipArchive(const std::vector<char>& buffer) {
-        mz_bool status;
-        status = mz_zip_reader_init_mem(
-            &this->_archive, buffer.data(), buffer.size(), 0
-        );
-        if(!status)
-            throw new std::runtime_error("Could not initialize archive");
-    }
-
-    ~ZipArchive() {
-        mz_zip_reader_end(&this->_archive);
-    }
-
-    size_t get_number_of_files() {
-        return (size_t) mz_zip_reader_get_num_files(&this->_archive);
-    }
-
-    std::vector<std::string> get_file_paths() {
-        const size_t n = this->get_number_of_files();
-        std::vector<std::string> result;
-        for(int i = 0; i < n; i++){
-            mz_zip_archive_file_stat file_stat;
-            if (!mz_zip_reader_file_stat(&this->_archive, i, &file_stat))
-                throw new std::runtime_error("Cannot get info about file "+i);
-            
-            result.push_back(file_stat.m_filename);
-        }
-        return result;
-    }
-
-    private:
-    mz_zip_archive _archive = {0};
-};
 
 
 std::vector<char> read_binary_file(const std::string& filename) {
@@ -78,6 +44,18 @@ extern "C" {
 
     void free_banana(const char* p) {
         delete[] p;
+    }
+
+    int initialize_module(const uint8_t* pbuffer, const size_t buffersize) {
+        try {
+            std::istringstream stream(
+                std::string(reinterpret_cast<const char*>(pbuffer), buffersize)
+            );
+            torch::jit::script::Module module = torch::jit::load(stream);
+            return 0;
+        } catch (const std::exception& e) {
+            return 1;
+        }
     }
 }
 
