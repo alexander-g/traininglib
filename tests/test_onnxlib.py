@@ -1,5 +1,8 @@
 import typing as tp
 import functools
+import os
+import tempfile
+
 from traininglib import onnxlib, unet
 import onnxruntime as ort
 import torch, torchvision
@@ -202,7 +205,8 @@ def test_training(testitem:TestItem, desc:str):
         torch_out['loss'] = float(loss)
         #gradients
         torch_out.update(
-            {f'{k}.gradient.output':v.numpy().astype('float64') for k,v in reversed(grads.items())}
+            {f'{k}.gradient.output':v.numpy().astype('float64')  # type: ignore
+                for k,v in reversed(grads.items())}
         )
         #parameters
         torch_out.update(
@@ -260,6 +264,11 @@ def test_inference(testitem:TestItem, desc:str):
     diff = np.abs(onnx_output - torch_output).max()
     print('diff:', diff)
     assert np.allclose(onnx_output, torch_output, atol=1e-7)
+
+    tempdir = tempfile.TemporaryDirectory()
+    exported.save_as_zipfile(
+        os.path.join(tempdir.name, 'exported.pt.zip'), x.numpy()
+    )
 
 
 

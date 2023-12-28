@@ -26,8 +26,8 @@ from torch.optim.adamw import adamw     # type: ignore
 
 
 TensorDict = tp.Dict[str, torch.Tensor]
-#StateDict  = tp.Dict[str, torch.nn.Parameter]
 StateDict  = TensorDict
+ArrayDict  = tp.Dict[str, np.ndarray]
 
 
 class ExportedInferenceONNX(tp.NamedTuple):
@@ -41,23 +41,10 @@ class ExportedInferenceONNX(tp.NamedTuple):
             path = f'{path}.pt.zip'
         base = os.path.splitext(os.path.basename(path))[0]
         with zipfile.ZipFile(path, 'w') as zipf:
-            zipf.writestr(f'{base}/onnx/inference.onnx', self.onnx_bytes)
-            schema = {}
-            for i,(k,v) in enumerate(self.inputfeed.items()):
-                vpath = f'{base}/.data/{i}.storage'
-                zipf.writestr(vpath, v.tobytes())
-                schema[k] = {
-                    'shape': list(v.shape),
-                    'dtype': str(v.dtype),
-                    'path':  vpath,
-                }
-            schema['x'] = {
-                'shape': list(x.shape),
-                'dtype': str(x.dtype),
-            }
             zipf.writestr(
-                f'{base}/onnx/inference.schema.json', json.dumps(schema, indent=2)
+                f'{base}/onnx/inference.onnx', self.onnx_bytes
             )
+            write_tensordict_to_zipfile(zipf, self.inputfeed, {'x':x})
 
 
 class DebugInfo(tp.NamedTuple):
@@ -956,6 +943,37 @@ def move_nodes_to_submodule(
     
     gm.graph.lint()
     return gm
+
+
+def write_tensordict_to_zipfile(
+    zipf:    zipfile.ZipFile, 
+    x:       TensorDict|ArrayDict,
+    x_extra: TensorDict|ArrayDict = {},
+) -> None:
+    '''Write arrays/tensors to the provided zip file similar to the 
+       torch.package format, including a json schema describing the shape 
+       and dtype. Arrays provided in `x_extra` are only stored in the schema.'''
+    base = os.path.basename(zipf.filename or '')
+
+    schema = {}
+    for i,(k,v) in enumerate(x.items()):
+        v     = np.array(v)
+        vpath = f'{base}/.data/{i}.storage'
+        zipf.writestr(vpath, v.tobytes())
+        schema[k] = {
+            'shape': list(v.shape),
+            'dtype': str(v.dtype),
+            'path':  vpath,
+        }
+    for k,v in x_extra.items():
+        v = np.array(v)
+        schema[k] = {
+            'shape': list(v.shape),
+            'dtype': str(v.dtype),
+        }
+    zipf.writestr(
+        f'{base}/onnx/inference.schema.json', json.dumps(schema, indent=2)
+    )
 
 
 def _return_all_nodes(gm:torch.fx.graph_module.GraphModule) -> torch.fx.graph_module.GraphModule:

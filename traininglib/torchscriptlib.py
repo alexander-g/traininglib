@@ -1,8 +1,7 @@
 import typing as tp
 import importlib
 import os
-import tempfile
-import uuid
+import zipfile
 
 import torch
 from . import onnxlib
@@ -15,23 +14,18 @@ LossFunction = tp.Callable[..., torch.Tensor]
 
 class ExportedTrainingStep(tp.NamedTuple):
     torchscriptmodule: torch.jit.ScriptModule
-    optimizerstate:    TensorDict
+    trainingstate:     TensorDict
 
 def export_model_for_training(
     m:         torch.nn.Module,
     optimizer: torch.optim.Optimizer,
-):
-    subclasstuple = error = subclass_via_tempfile(m)
-    if isinstance(subclasstuple, Exception):
-        return error
-    TrainStepClass, _tempdir = subclasstuple
-    
-    trainstepmodule = TrainStepClass(m, optimizer)
+):  
+    trainstepmodule = TrainStep(m, optimizer)
     trainstepscript = torch.jit.script(trainstepmodule)
 
     return ExportedTrainingStep(
         torchscriptmodule = trainstepscript,
-        optimizerstate    = trainstepmodule.initial_optimizerstate,
+        trainingstate     = trainstepmodule.initial_trainingstate,
     )
 
 
@@ -43,67 +37,83 @@ class TrainStep(torch.nn.Module):
         optimizer: torch.optim.Optimizer,
     ):
         super().__init__()
+        _check_module_annotations(module)
         self.module    = torch.jit.script(module)
-        self.params    = list(self.module.parameters())
+
+        # trainable model parameters with gradients
+        self.params = list(self.module.parameters())
         for p in self.params:
             p.grad = torch.zeros_like(p)
-        self.grads:TensorList = [
+        self.gradients: TensorList = [
             tp.cast(torch.Tensor, p.grad) for p in self.params
         ]
-        self.paramkeys = list( dict(self.module.named_parameters()).keys() )
-        self.optimizer = onnxlib.initialize_optimizer(optimizer)
+        self.paramkeys  = list( dict(self.named_parameters()).keys() )
+        # modelstate: trainable and non-trainable parameters (requires_grad)
+        self.modelstate = (
+            {k:v for k,v in self.named_parameters()}
+            | {k:v for k,v in self.named_buffers()}
+        )
+        self.optimizer  = onnxlib.initialize_optimizer(optimizer)
 
-        gradsdict  = dict(zip(self.paramkeys, self.grads))
-        paramsdict = {
-            k:v.clone().detach() for k,v in zip(self.paramkeys, self.params)
-        }
-        optimizerstate:tp.Dict[str, torch.Tensor] = \
-            _pack_optimizerstate(paramsdict, self.optimizer.buffers)
+        gradsdict = dict(zip(self.paramkeys, self.gradients))
+        optimizerstate:TensorDict = _pack_optimizerstate(self.optimizer.buffers)
+        optimizerkeys: tp.List[str] = list(optimizerstate.keys())
+        trainingstate = self.modelstate | optimizerstate
+        trainingstate = {k:v.clone().detach() for k,v in trainingstate.items()}
 
         def optimizer_step(
-            grads:          TensorDict, 
-            optimizerstate: TensorDict
+            grads:         TensorDict, 
+            trainingstate: TensorDict
         ) -> TensorDict:
             '''Helper function running an optimizer step. Can be traced.'''
-            params, buffers = _unpack_optimizerstate(optimizerstate)
+            optimizerstate, modelstate = \
+                 _extract_from_tensordict(trainingstate, optimizerkeys)
+            optimizerbuffers = _unpack_optimizerstate(optimizerstate)
+            modelparams, modelbuffers = \
+                _extract_from_tensordict(modelstate, self.paramkeys)
             
-            new_params, new_buffers = onnxlib.run_optimizer(
+            new_modelparams, new_optimizerbuffers = onnxlib.run_optimizer(
                 grads, 
-                params, 
-                buffers, 
+                modelparams, 
+                optimizerbuffers, 
                 self.optimizer.func, 
                 self.optimizer.hyper_params
             )
-            new_optimizerstate = _pack_optimizerstate(new_params, new_buffers)
-            assert optimizerstate.keys() == new_optimizerstate.keys()
-            return new_optimizerstate
+            new_optimizerstate = _pack_optimizerstate(new_optimizerbuffers)
+            new_trainingstate  = (
+                new_modelparams | modelbuffers | new_optimizerstate
+            )
+            assert trainingstate.keys() == new_trainingstate.keys()
+            return new_trainingstate
         self.optimizer_fxt = torch.jit.trace(
-            optimizer_step, (gradsdict, optimizerstate), strict=False
+            optimizer_step, (gradsdict, trainingstate), strict=False
         )
+ 
+        self.initial_trainingstate = trainingstate
+        self.trainingstate_keys = list(trainingstate.keys())
 
-        self._params_from_optimizerstate = torch.jit.trace(
-            _unpack_params_from_optimizerstate, (optimizerstate,), strict=False
-        )
 
-        self.initial_optimizerstate = optimizerstate
-        #self.forward = self._forward
     
-    def _prepare_forward(self, optimizerstate:TensorDict) -> TensorList:
+    def _prepare_forward(self, trainingstate:TensorDict) -> TensorDict:
         # zero_grad() does not work with torchscript
-        for g in self.grads:
+        for g in self.gradients:
             g[:] = torch.zeros_like(g)
+        
         # set parameters from input
-        old_params = [p.clone() for p in self.params]
-        new_params = self._params_from_optimizerstate(optimizerstate)
-        self._set_parameters(new_params)
-        return old_params
+        old_modelstate = {k:p.clone() for k,p in self.modelstate.items()}
+        self._set_modelstate(trainingstate)
+        return old_modelstate
     
-    def _set_parameters(self, new_params:TensorList) -> None:
+    def _set_modelstate(self, new_state:TensorDict) -> None:
         with torch.no_grad():
-            for i,p in enumerate(self.params):
-                p[:] = new_params[i]
+            for k,p in self.modelstate.items():
+                p.ravel()[:] = new_state[k].ravel()
 
-    def _backward_step(self, loss:torch.Tensor, optimizerstate:TensorDict) -> TensorDict:
+    def _backward_step(
+        self, 
+        loss:          torch.Tensor, 
+        trainingstate: TensorDict
+    ) -> TensorDict:
         loss.backward()
         grads = [
             # ensure new tensor
@@ -111,21 +121,26 @@ class TrainStep(torch.nn.Module):
         ]
         gradsdict = dict(zip(self.paramkeys, grads))
 
-        new_optimizerstate  = self.optimizer_fxt(gradsdict, optimizerstate)
+        new_trainingstate = self.optimizer_fxt(gradsdict, trainingstate)
 
-        output = dict(new_optimizerstate)
+        output = dict(new_trainingstate)
         output.update( {'loss': loss} )
         output.update( {f'{k}.gradient':v for k,v in gradsdict.items()} )
         return output
+    
+    def forward(self, inputfeed:TensorDict) -> TensorDict:
+        trainingstate, inputs = \
+            _extract_from_tensordict(inputfeed, self.trainingstate_keys)
+        old_modelstate = self._prepare_forward(trainingstate)
+        loss, outputs  = self.module(inputs)
+        output         = self._backward_step(loss, trainingstate)
+        self._set_modelstate(old_modelstate)
+        return output
 
 
-def _pack_optimizerstate(
-    params:TensorDict, 
-    buffers:tp.Dict[str, TensorList]
-) -> TensorDict:
-    '''Pack parameters and optimizer buffers into a flat dict'''
-    # params are used as is
-    optimizerstate:TensorDict = dict(params)
+def _pack_optimizerstate(buffers:tp.Dict[str, TensorList]) -> TensorDict:
+    '''Pack optimizer buffers into a flat dict'''
+    optimizerstate:TensorDict = {}
 
     # buffers are inserted from groupname and index
     for buffergroupname, buffergroup in buffers.items():
@@ -133,72 +148,48 @@ def _pack_optimizerstate(
             optimizerstate[f'{buffergroupname}.{i}.buffer'] = buffer
     return optimizerstate
 
-def _unpack_optimizerstate(optimizerstate:TensorDict) \
--> tp.Tuple[TensorDict, tp.Dict[str, TensorList]]:
+def _unpack_optimizerstate(optimizerstate:TensorDict) -> tp.Dict[str,TensorList]:
     '''Unpack a flat dict returned from `_pack_optimizerstate()`'''
-    params:  TensorDict               = {}
     buffers: tp.Dict[str, TensorList] = {}
     for k,v in optimizerstate.items():
         if k.endswith('.buffer'):
             buffergroupname = '.'.join(k.split('.')[:-2])
             buffers[buffergroupname] = buffers.get(buffergroupname, []) + [v]
+    return buffers
+
+def _extract_from_tensordict(
+    tensordict: TensorDict,
+    keys:       tp.List[str],
+) -> tp.Tuple[TensorDict, TensorDict]:
+    '''Split a dict, returning one with specified keys and remaining.'''
+    in_dict:TensorDict  = {}
+    out_dict:TensorDict = {}
+    for k,v in tensordict.items():
+        if k in keys:
+            in_dict[k] = v
         else:
-            params[k] = v
-
-    return params, buffers
-
-def _unpack_params_from_optimizerstate(optimizerstate:TensorDict) -> TensorList:
-    '''Unpack a flat dict and return only parameters as a list,
-       because torch.jit.trace() cannot handle or something.'''
-    return list(_unpack_optimizerstate(optimizerstate)[0].values())
+            out_dict[k] = v
+    return in_dict, out_dict
 
 
-# I really hate this but I haven't found an easier solution yet
-# torch.jit.script requires that the scripted function has annotations
-# so this function takes annotations from module and writes a new module to file
-def subclass_via_tempfile(module:torch.nn.Module) \
--> tp.Tuple[type[TrainStep], tempfile.TemporaryDirectory]|Exception:
-    module_anns = module.forward.__annotations__
-    if 'x' not in module_anns or 't' not in module_anns:
-        return Exception(
-            'Module must accept annotated inputs `x` and targets `t`'
+def _check_module_annotations(m:torch.nn.Module) -> None:
+    annotations = m.forward.__annotations__
+    return_type = tp.Tuple[torch.Tensor, TensorDict]
+    if 'return' not in annotations or annotations['return'] != return_type:
+        raise Exception(
+            f'Module must have an annotated return type {return_type}'
         )
-    x_type = type_to_str(module_anns['x'])
-    t_type = type_to_str(module_anns['t'])
-    trainstep_src = trainstep_src_template.format(x_type=x_type, t_type=t_type)
-
-    tempdir  = tempfile.TemporaryDirectory()
-    temppath = os.path.join(tempdir.name, 'trainstep.py')
-    open(temppath, 'w').write(trainstep_src)
-
-    uid  = str(uuid.uuid4())
-    spec = importlib.util.spec_from_file_location('tempmodule'+uid, temppath)
-    if spec is None or spec.loader is None:
-        return Exception('Unexpected error')
     
-    tempmodule = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(tempmodule)
+    input_type = TensorDict
+    if len(annotations) > 2:
+        raise Exception(f'Module must have a single input {input_type}')
+    
+    input_name = [k for k in annotations.keys() if k != 'return'][0]
+    if annotations[input_name] != input_type:
+        raise Exception(f'Only {input_type} supported as module input')
 
-    return tempmodule.TrainStep, tempdir
 
-def type_to_str(t:type) -> str:
-    if t == torch.Tensor:
-        return 'torch.Tensor'
-    else:
-        return str(t)
-
-trainstep_src_template = '''
-import torch
-import typing
-from traininglib.torchscriptlib import TrainStep as BaseTrainStep, TensorDict
-
-class TrainStep(BaseTrainStep):
-    def forward(self, x:{x_type}, t:{t_type}, optimizerstate:TensorDict):
-        old_params = self._prepare_forward(optimizerstate)
-        loss = self.module(x, t)
-        output = self._backward_step(loss, optimizerstate)
-        self._set_parameters(old_params)
-        return output
-'''
-
+def write_tensordict_to_zipfile(path:str, x:TensorDict):
+    with zipfile.ZipFile(path) as zipf:
+        onnxlib.write_tensordict_to_zipfile(zipf, x)
 

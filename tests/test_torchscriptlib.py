@@ -4,23 +4,31 @@ import numpy as np
 
 from traininglib import torchscriptlib
 
-class ConvAndLoss(torch.nn.Module):
+TensorDict = tp.Dict[str, torch.Tensor]
+
+class ConvBNAndLoss(torch.nn.Module):
         def __init__(self, *a, **kw):
             super().__init__(*a, **kw)
-            self.conv = torch.nn.Conv2d(3,1, kernel_size=3, padding=1)
+            self.seq = torch.nn.Sequential(
+                torch.nn.Conv2d(3,3, kernel_size=3, padding=1),
+                torch.nn.BatchNorm2d(3),
+                torch.nn.Conv2d(3,1, kernel_size=1, padding=0),
+            )
 
-        def forward(self, x:tp.List[torch.Tensor], t:torch.Tensor):
-            output = self.conv(x[0]) + self.conv(x[1])
+        def forward(self, inputs:TensorDict) -> tp.Tuple[torch.Tensor, TensorDict]:
+            x0 = inputs['x0']
+            x1 = inputs['x1']
+            t  = inputs['t']
+            output = self.seq(x0) + self.seq(x1)
             loss = torch.nn.functional.l1_loss(output, t)
-            return loss
+            return loss, {}
 
 def test_export_as_training():
-    m  = ConvAndLoss()
+    m  = ConvBNAndLoss()
     sd = {k:v.clone() for k,v in m.state_dict().items()}
 
     loss_func = torch.nn.functional.l1_loss
-    x_        = torch.ones([1,3,10,10])
-    x         = [x_, x_]
+    x         = torch.ones([1,3,10,10])
     t         = torch.zeros([1,1,10,10])
     optim     = torch.optim.SGD(m.parameters(), lr=0.0002, momentum=0.9)
     
@@ -29,11 +37,15 @@ def test_export_as_training():
     
     assert state_dicts_allclose(sd, m.state_dict())
 
+    print(exported.torchscriptmodule.code)
+
     n = 4
-    ts_outputs = [ exported.optimizerstate ]
+    ts_outputs = [ exported.trainingstate ]
     for i in range(n):
-        output = exported.torchscriptmodule(x, t, ts_outputs[-1])
+        inputfeed = ts_outputs[-1] | {'x0':x, 'x1':x, 't':t}
+        output    = exported.torchscriptmodule(inputfeed)
         ts_outputs.append(output)
+        print()
     
     assert state_dicts_allclose(sd, m.state_dict())
     assert state_dicts_allclose(sd, exported.torchscriptmodule.state_dict())
@@ -43,7 +55,7 @@ def test_export_as_training():
     eager_outputs:tp.List[tp.Dict] = [{}]
     for i in range(n):
         m.zero_grad()
-        loss = m(x, t)
+        loss,_ = m({'x0':x, 'x1':x,  't':t})
         loss.backward()
         optim.step()
         eager_outputs.append( {'loss':loss.item()} )
@@ -66,6 +78,7 @@ def test_export_as_training():
             print()
 
 
+    #exported.torchscriptmodule.save('DELETE.torchscript')
     #assert 0
 
 
