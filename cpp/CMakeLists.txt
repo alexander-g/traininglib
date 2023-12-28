@@ -23,7 +23,8 @@ FetchContent_MakeAvailable(json)
 
 
 if (UNIX)
-    set(PYTORCH_URL https://download.pytorch.org/libtorch/cpu/libtorch-cxx11-abi-shared-with-deps-2.1.2%2Bcpu.zip)
+    #NOTE: pre-cxx11 abi required
+    set(PYTORCH_URL https://download.pytorch.org/libtorch/cpu/libtorch-shared-with-deps-2.1.2%2Bcpu.zip)
 elseif (WIN32)
     set(PYTORCH_URL https://download.pytorch.org/libtorch/cpu/libtorch-win-shared-with-deps-2.1.2%2Bcpu.zip)
 endif()
@@ -35,30 +36,13 @@ FetchContent_Declare(pytorch
 FetchContent_MakeAvailable(pytorch)
 find_package(Torch REQUIRED HINTS "${CMAKE_BINARY_DIR}/_deps/pytorch-src/share/cmake/Torch")
 
-message("\n${TORCH_LIBRARIES}\n")
 
-add_executable(test interface.cpp miniz.cpp)
-set_property(TARGET test PROPERTY CXX_STANDARD 17)
-target_include_directories(test PRIVATE ${MINIZ_DIR})
-target_include_directories(test PRIVATE ${CMAKE_BINARY_DIR}/thirdparty/miniz)
-target_link_libraries(test PRIVATE miniz)
-add_dependencies(test miniz)
-target_include_directories(test PRIVATE ${CMAKE_BINARY_DIR}/_deps/json-src/single_include/)
-target_include_directories(test PRIVATE ${CMAKE_BINARY_DIR}/_deps/pytorch-src/include/)
-target_link_libraries(test PRIVATE "${TORCH_LIBRARIES}")
-
-#target_link_libraries(test PRIVATE nlohmann_json::nlohmann_json)
-
-#target_link_libraries(test "${TORCH_LIBRARIES}")
-
-
-
-add_library(testlib SHARED interface.cpp miniz.cpp)
-set_property(TARGET test PROPERTY CXX_STANDARD 17)
-target_include_directories(testlib PRIVATE ${MINIZ_DIR})
-target_include_directories(testlib PRIVATE ${CMAKE_BINARY_DIR}/thirdparty/miniz)
-target_link_libraries(testlib PRIVATE miniz)
-add_dependencies(testlib miniz)
-target_include_directories(testlib PRIVATE ${CMAKE_BINARY_DIR}/_deps/json-src/single_include/)
-target_include_directories(testlib PRIVATE ${CMAKE_BINARY_DIR}/_deps/pytorch-src/include/)
-target_link_libraries(testlib PRIVATE "${TORCH_LIBRARIES}")
+add_library(TSinterface SHARED interface.cpp miniz.cpp)
+set_property(TARGET TSinterface PROPERTY CXX_STANDARD 17)
+target_include_directories(TSinterface PRIVATE ${MINIZ_DIR})
+target_include_directories(TSinterface PRIVATE ${CMAKE_BINARY_DIR}/thirdparty/miniz)
+target_link_libraries(TSinterface PRIVATE miniz)
+add_dependencies(TSinterface miniz)
+target_include_directories(TSinterface PRIVATE ${CMAKE_BINARY_DIR}/_deps/json-src/single_include/)
+target_include_directories(TSinterface PRIVATE ${CMAKE_BINARY_DIR}/_deps/pytorch-src/include/)
+target_link_libraries(TSinterface PRIVATE "${TORCH_LIBRARIES}")

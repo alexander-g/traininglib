@@ -1,5 +1,6 @@
 import typing as tp
 import importlib
+import io
 import os
 import zipfile
 
@@ -190,6 +191,11 @@ def _check_module_annotations(m:torch.nn.Module) -> None:
 
 
 def write_tensordict_to_zipfile(path:str, x:TensorDict):
-    with zipfile.ZipFile(path) as zipf:
+    with zipfile.ZipFile(path, 'w') as zipf:
         onnxlib.write_tensordict_to_zipfile(zipf, x)
 
+def pack_tensordict(x:TensorDict) -> bytes:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, 'w') as zipf:
+        onnxlib.write_tensordict_to_zipfile(zipf, x)
+    return buffer.getvalue()

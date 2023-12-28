@@ -953,7 +953,7 @@ def write_tensordict_to_zipfile(
     '''Write arrays/tensors to the provided zip file similar to the 
        torch.package format, including a json schema describing the shape 
        and dtype. Arrays provided in `x_extra` are only stored in the schema.'''
-    base = os.path.basename(zipf.filename or '')
+    base = os.path.basename(zipf.filename or '.')
 
     schema = {}
     for i,(k,v) in enumerate(x.items()):
