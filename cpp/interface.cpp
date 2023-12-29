@@ -61,6 +61,17 @@ at::ScalarType string_to_dtype(const std::string& dtypestring) {
     }
 }
 
+std::string dtype_to_string(const caffe2::TypeMeta& dtype) {
+    if (dtype == torch::kFloat32)
+        return "float32";
+    else if (dtype == torch::kFloat64)
+        return "float64";
+    else if (dtype == torch::kInt64)
+        return "int64";
+    else
+        throw new std::runtime_error("Unsupported dtype");
+}
+
 int64_t shape_to_size(const std::vector<int64_t> shape) {
     int64_t size = 1;
     for(const int64_t i: shape) {
@@ -97,6 +108,60 @@ TensorDict read_inputfeed_from_archive(const ZipArchive& archive) {
     return inputfeed;
 }
 
+std::vector<uint8_t> write_tensordict_to_archive(const TensorDict& data) {
+    json schema;
+    ZipArchive archive;
+    int i = 0;
+    for(const auto& item: data){
+        const torch::Tensor& t = item.value();
+        const auto& key        = item.key();
+
+        std::ostringstream oss;
+        oss << "./data/" << i << ".storage";
+        const std::string path = oss.str();
+
+        archive.write_file(path, t.data_ptr(), t.nbytes());
+
+        json schema_item;
+        schema_item["path"]  = path;
+        schema_item["dtype"] = dtype_to_string(t.dtype());
+        schema_item["shape"] = t.sizes();
+        schema[item.key()]   = schema_item;
+
+        i++;
+    }
+    const std::string schema_str = schema.dump();
+    archive.write_file(
+        "./onnx/inference.schema.json", schema_str.c_str(), schema_str.size()
+    );
+    return archive.to_bytes();
+}
+
+TensorDict to_tensordict(const torch::jit::IValue& x) {
+    if(!x.isGenericDict())
+        throw new std::runtime_error("Value is not a dict");
+    
+    const torch::Dict<c10::IValue, c10::IValue> x_dict = x.toGenericDict();
+    torch::Dict<std::string, torch::Tensor> result;
+    for (const auto& pair : x_dict) {
+        if(!pair.key().isString() || !pair.value().isTensor())
+            throw new std::runtime_error("Dict is not a string-tensor dict.");
+
+        result.insert(pair.key().toString()->string(), pair.value().toTensor());
+    }
+    return result;
+}
+
+void write_data_to_output(
+    const std::vector<uint8_t>& data,
+    uint8_t**                   outputbuffer,
+    size_t*                     outputsize
+) {
+    *outputsize   = data.size();
+    *outputbuffer = new uint8_t[data.size()];
+    std::memcpy(*outputbuffer, data.data(), data.size());
+}
+
 
 //TODO: don't store this here
 namespace global {
@@ -105,7 +170,7 @@ namespace global {
 
 extern "C" {
     /** Initialize a TorchScript module from a buffer. */
-    int initialize_module(const uint8_t* pbuffer, const size_t buffersize) {
+    int32_t initialize_module(const uint8_t* pbuffer, const size_t buffersize) {
         try {
             std::istringstream stream(
                 std::string(reinterpret_cast<const char*>(pbuffer), buffersize)
@@ -117,21 +182,33 @@ extern "C" {
         }
     }
 
-    int run_module(const uint8_t* pbuffer, const size_t buffersize) {
-        const std::vector<char> buffer(pbuffer, pbuffer+buffersize);
+    int32_t run_module(
+        const uint8_t*  inputbuffer,
+        const size_t    inputbuffersize,
+              uint8_t** outputbuffer,
+              size_t*   outputbuffersize
+    ) {
+        const std::vector<char> inputdata(
+            inputbuffer, inputbuffer + inputbuffersize
+        );
         try {
-            for (const auto& pair : global::module.named_parameters()) {
-        //const std::string& name = pair.key();
-        torch::Tensor parameter = pair.value;
-    }
-
-            const ZipArchive archive(buffer);
+            const ZipArchive archive(inputdata);
             const TensorDict inputfeed = read_inputfeed_from_archive(archive);
-            torch::jit::IValue output  = global::module.forward({torch::IValue(inputfeed)});
+            torch::jit::IValue output  = global::module.forward(
+                {torch::IValue(inputfeed)}
+            );
+            const std::vector<uint8_t> archivedata = \
+                write_tensordict_to_archive(to_tensordict(output));
+            write_data_to_output(archivedata, outputbuffer, outputbuffersize);
+
             return 0;
         } catch (...) {
             return 1;
         }
+    }
+
+    void free_memory(uint8_t* p) {
+        delete[] p;
     }
 }
 

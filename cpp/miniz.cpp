@@ -18,8 +18,15 @@ ZipArchive::ZipArchive(const std::vector<char>& buffer): pImpl(new ZipArchiveImp
         throw new std::runtime_error("Could not initialize archive");
 }
 
+ZipArchive::ZipArchive(): pImpl(new ZipArchiveImpl()) {
+    mz_bool status = mz_zip_writer_init_heap(&this->pImpl->_archive, 0, 1024);
+    if(!status)
+        throw new std::runtime_error("Could not initialize archive");
+}
+
 ZipArchive::~ZipArchive() {
     mz_zip_reader_end(&this->pImpl->_archive);
+    mz_zip_writer_end(&this->pImpl->_archive);
     delete this->pImpl;
 }
 
@@ -52,6 +59,42 @@ std::vector<uint8_t> ZipArchive::read_file(const std::string& path) const {
     const std::vector<uint8_t> result(
         reinterpret_cast<const uint8_t*>(p),
         reinterpret_cast<const uint8_t*>(p) + uncomp_size
+    );
+    mz_free(p);
+    return result;
+}
+
+void ZipArchive::write_file(
+    const std::string& path, 
+    const void*        pbuffer, 
+    size_t             buffersize
+) {
+    const mz_bool status = mz_zip_writer_add_mem(
+        &this->pImpl->_archive,
+        path.c_str(),
+        pbuffer,
+        buffersize,
+        MZ_NO_COMPRESSION
+    );
+    if(!status) {
+        throw new std::runtime_error("Could not write to archive.");
+    }
+}
+
+
+std::vector<uint8_t> ZipArchive::to_bytes() {
+    void*  p = 0;
+    size_t buffersize;
+    const mz_bool status = mz_zip_writer_finalize_heap_archive(
+        &this->pImpl->_archive, &p, &buffersize
+    );
+    if(!status || !p) {
+        throw new std::runtime_error("Could not finalize archive.");
+    }
+
+    const std::vector<uint8_t> result(
+        reinterpret_cast<const uint8_t*>(p),
+        reinterpret_cast<const uint8_t*>(p) + buffersize
     );
     mz_free(p);
     return result;
