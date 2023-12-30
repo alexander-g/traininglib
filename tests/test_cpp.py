@@ -7,7 +7,9 @@ import json
 import zipfile
 
 import numpy as np
-import torch
+import torch, torchvision
+import pytest
+
 from traininglib import torchscriptlib
 
 LIB_PATH = './cpp/build/libTSinterface.so'
@@ -30,6 +32,7 @@ def load_library(path:str):
         ctypes.c_size_t,                                #inputbuffersize
         ctypes.POINTER(ctypes.POINTER(ctypes.c_uint8)), #outputbuffer
         ctypes.POINTER(ctypes.c_size_t),                #outputbuffersize
+        ctypes.c_bool,                                  #debug
     ]
 
     lib.free_memory.restype  = None
@@ -55,7 +58,9 @@ def output_bytes_to_tensordict(data:bytes) -> TensorDict|Exception:
         for p in paths:
             if p.endswith('/inference.schema.json'):
                 try:
-                    schema = json.loads(zipf.read(p))
+                    jsonraw = zipf.read(p)
+                    schema  = json.loads(jsonraw)
+                    assert isinstance(schema, dict)
                     break
                 except Exception as e:
                     return Exception('Could not read inference schema')
@@ -82,7 +87,9 @@ def output_bytes_to_tensordict(data:bytes) -> TensorDict|Exception:
             result[key] = tensor
     return result
 
-class Module(torch.nn.Module):
+
+
+class BasicModule(torch.nn.Module):
     def __init__(self, basemodule):
         super().__init__()
         self.basemodule = basemodule
@@ -90,7 +97,65 @@ class Module(torch.nn.Module):
     def forward(self, inputfeed:tp.Dict[str, torch.Tensor]):
         return {'y': self.basemodule(inputfeed['x'])}
 
-def test_initialize_module():
+
+class DetectionModule(BasicModule):
+    def forward(self, inputfeed:tp.Dict[str, torch.Tensor]):
+        x = [inputfeed['x'][0]]
+        if 't.boxes' in inputfeed and 't.labels' in inputfeed:
+            t = [{
+                'boxes':  inputfeed['t.boxes'],
+                'labels': inputfeed['t.labels'],
+            }]
+        else:
+            t = None
+        losses, outputs = self.basemodule(x, t)
+        return losses if self.basemodule.training else outputs[0]
+
+
+
+class TestItem(tp.NamedTuple):
+    module:    torch.nn.Module
+    inputfeed: TensorDict
+    desc:      str
+
+
+testdata = [
+    TestItem(
+        module    = BasicModule(torch.nn.Conv2d(3,1,kernel_size=3)),
+        inputfeed = {'x':torch.rand(2,3,64,64)},
+        desc      = 'basic-conv'
+    ),
+
+    TestItem(
+        module = DetectionModule(
+            torchvision.models.detection.fasterrcnn_mobilenet_v3_large_fpn(
+                weights=None, progress=False, weights_backbone=None
+            ).eval()
+        ),
+        inputfeed = {'x':torch.rand(1,3,32,32)},
+        desc      = 'faster-rcnn.eval'
+    ),
+
+    TestItem(
+        module = DetectionModule(
+            torchvision.models.detection.fasterrcnn_mobilenet_v3_large_fpn(
+                weights=None, progress=False, weights_backbone=None
+            ).train()
+        ),
+        inputfeed = {
+            'x':        torch.rand(1,3,32,32),
+            't.boxes':  torch.as_tensor([[ 0.0, 0.0, 5.0, 5.0 ]]),
+            't.labels': torch.as_tensor([1]),
+
+        },
+        desc = 'faster-rcnn.train'
+    ),
+]
+
+
+@pytest.mark.parametrize("testitem", testdata)
+def test_initialize_module(testitem):
+    print(f'==========TRAINING TEST: {testitem.desc}==========')
     lib = load_library(LIB_PATH)
 
     invalid_bytes = b'banana'
@@ -98,7 +163,7 @@ def test_initialize_module():
     assert rc != 0, 'Initialization with invalid data should not succeed'
 
 
-    m  = Module(torch.nn.Conv2d(3,1, kernel_size=3))
+    m  = testitem.module
     ms = torch.jit.script(m)
     tempdir  = tempfile.TemporaryDirectory()
     temppath = os.path.join(tempdir.name, 'module.torchscript')
@@ -111,12 +176,18 @@ def test_initialize_module():
 
 
     output_pointers = create_output_pointers()
-    rc = lib.run_module(invalid_bytes, len(invalid_bytes), *output_pointers)
+    rc = lib.run_module(
+        invalid_bytes, len(invalid_bytes), *output_pointers, False
+    )
     assert rc != 0, 'Running module with invalid data should not succeed'
 
-    x = torch.ones([1,3,4,4])*2
-    inputs = torchscriptlib.pack_tensordict({'x': x})
-    rc     = lib.run_module(inputs, len(inputs), *output_pointers)
+    inputfeed = testitem.inputfeed
+    torch.manual_seed(0)
+    eager_output = ms(inputfeed)
+
+    torch.manual_seed(0)
+    inputs = torchscriptlib.pack_tensordict(inputfeed)
+    rc     = lib.run_module(inputs, len(inputs), *output_pointers, True)
     assert rc == 0, 'Running module failed'
     output_bytes = output_pointers_to_bytes(*output_pointers)
     output       = output_bytes_to_tensordict(output_bytes)
@@ -124,7 +195,8 @@ def test_initialize_module():
 
     lib.free_memory(output_pointers[0]._obj)
 
-    eager_output = m({'x':x})
-    assert torch.allclose(eager_output['y'], output['y'])
+    for key in eager_output.keys():
+        assert torch.allclose(eager_output[key], output[key])
+
 
     #assert 0

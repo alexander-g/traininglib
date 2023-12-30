@@ -109,7 +109,7 @@ TensorDict read_inputfeed_from_archive(const ZipArchive& archive) {
 }
 
 std::vector<uint8_t> write_tensordict_to_archive(const TensorDict& data) {
-    json schema;
+    json schema({});
     ZipArchive archive;
     int i = 0;
     for(const auto& item: data){
@@ -162,6 +162,15 @@ void write_data_to_output(
     std::memcpy(*outputbuffer, data.data(), data.size());
 }
 
+void handle_eptr(std::exception_ptr eptr){
+    try{
+        if (eptr)
+            std::rethrow_exception(eptr);
+    } catch(const std::exception& e) {
+        std::cout << "Caught exception: '" << e.what() << "'\n";
+    }
+}
+
 
 //TODO: don't store this here
 namespace global {
@@ -186,7 +195,8 @@ extern "C" {
         const uint8_t*  inputbuffer,
         const size_t    inputbuffersize,
               uint8_t** outputbuffer,
-              size_t*   outputbuffersize
+              size_t*   outputbuffersize,
+              bool      debug = false
     ) {
         const std::vector<char> inputdata(
             inputbuffer, inputbuffer + inputbuffersize
@@ -203,6 +213,8 @@ extern "C" {
 
             return 0;
         } catch (...) {
+            if(debug)
+                handle_eptr( std::current_exception() );
             return 1;
         }
     }
