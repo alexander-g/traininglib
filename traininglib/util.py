@@ -1,4 +1,5 @@
 import typing as tp
+import argparse
 import time
 import os
 import shutil
@@ -26,7 +27,11 @@ def collect_loaded_non_venv_modules() -> tp.List[str]:
         if not isinstance(modulefile, str):
             continue
         
-        if not modulefile.startswith(sys.prefix) and not 'site-packages' in modulefile:
+        if (
+            not modulefile.startswith(sys.prefix)            #venv
+            and not modulefile.startswith(sys.base_prefix)   #builtins
+            and not 'site-packages' in modulefile            #more venv
+        ):
             modules.append(name)
     return modules
 
@@ -34,18 +39,31 @@ def backup_code(destination:str) -> str:
     '''Save source at the destination folder, for reproducibility.'''
     destination = time.strftime(destination)
     cwd      = os.path.realpath(os.getcwd())+'/'
-    srcfiles = collect_loaded_non_venv_modules()
-    for src_f in srcfiles:
+    srcmods  = collect_loaded_non_venv_modules()
+    for src_m in srcmods:
+        src_f = sys.modules[src_m].__file__
         src_f = os.path.realpath(src_f)
-        dst_f = os.path.join(destination, src_f.replace(cwd, ''))
+        dst_f = os.path.join(destination, 'code', src_m + '.py')
         os.makedirs(os.path.dirname(dst_f), exist_ok=True)
         shutil.copy(src_f, dst_f)
     open(os.path.join(destination, 'args.txt'), 'w').write(' '.join(sys.argv))
     return destination
 
-def prepare_for_training(model, args, config) -> tp.Tuple[torch.nn.Module, str, str]:
+
+class CheckpointPaths(tp.NamedTuple):
+    #folder where saved models and code is saved
+    checkpointdir: str
+    #path to the final saved model file
+    modelpath:     str
+    #path to a temporary model file, deleted after training
+    modelpath_tmp: str
+
+def prepare_for_training(
+    model:  'modellib.BaseModel', 
+    args:   argparse.Namespace, 
+) -> tp.Tuple[torch.nn.Module, CheckpointPaths]:
     '''Some housekeeping tasks before training starts'''
-    destination, name = generate_output_name(args, config)
+    destination, name = generate_output_name(args)
     print('Output directory:', destination)
     backup_code(destination)
 
@@ -54,4 +72,4 @@ def prepare_for_training(model, args, config) -> tp.Tuple[torch.nn.Module, str, 
     modelpath       = os.path.join(destination, name)
     modelpath_tmp   = model.save(f'{modelpath}.tmp')
     model           = modellib.load_model( modelpath_tmp )
-    return model, modelpath, modelpath_tmp
+    return model, CheckpointPaths(destination, modelpath, modelpath_tmp)

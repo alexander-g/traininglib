@@ -126,8 +126,8 @@ class BaseModel(torch.nn.Module):
         fit_kw:     tp.Dict[str, tp.Any] = {},
     ):
         '''Abstract public interface to start a training session.
-           Subclasses should call super()._start_training() and provide 
-           the task and datset classes'''
+           Subclasses should implement it calling super()._start_training() 
+           and providing the task and dataset classes'''
         raise NotImplementedError()
 
 
@@ -141,12 +141,12 @@ def start_training_from_cli_args(
 ) -> bool:
     '''`BaseModel.start_training()` with basic config provided by
        command line arguments from `args.base_training_argparser()`'''
-    checkpointdir, name = util.generate_output_name(args)
+    model, paths = util.prepare_for_training(model, args)
     fit_kw  = {
         'epochs':          args.epochs,
         'lr':              args.lr,
         'batch_size':      args.batchsize,
-        'checkpoint_dir':  checkpointdir, 
+        'checkpoint_dir':  paths.checkpointdir, 
     } | fit_kw
 
     model.start_training(
@@ -155,7 +155,8 @@ def start_training_from_cli_args(
         task_kw    = task_kw,
         fit_kw     = fit_kw,
     )
-    model.save(os.path.join(checkpointdir, f'{name}.pt.zip'))
+    model = model.save(paths.modelpath)
+    os.remove(paths.modelpath_tmp)
     return True
 
 
