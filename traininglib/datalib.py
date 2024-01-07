@@ -163,22 +163,34 @@ def convert_rgb_to_mask(
     return mask[:,None]
 
 
-def load_file_pairs(filepath:str, delimiter:str=',') -> tp.List[tp.Tuple[str,str]]:
-    '''Load pairs of file paths from a csv file and check that they exist..'''
-
+def load_file_tuples(filepath:str, delimiter:str, n:int) -> tp.List[tp.List[str]]:
+    '''Load n-tuples of file paths from a csv file and check that they exist.'''
     lines = open(filepath, 'r').read().strip().split('\n')
     dirname = os.path.dirname(filepath)
-    pairs:tp.List[tp.Tuple[str,str]] = []
+    pairs:tp.List[tp.List[str]] = []
     for line in lines:
         pair = [f.strip() for f in line.split(delimiter)]
-        if len(pair) != 2:
-            raise Exception(f'File does not contain pairs delimited by "{delimiter}"')
+        if len(pair) != n:
+            raise Exception(
+                f'File does not contain {n}-tuples delimited by "{delimiter}"'
+            )
         #convert relative paths to absolute, starting from the textfile directory
         pair = [f if os.path.isabs(f) else os.path.join(dirname, f) for f in pair]
         if not all(os.path.exists(p) for p in pair):
             raise Exception(f'Files not found: {pair}')
-        pairs.append((pair[0], pair[1]))
+        pairs.append(pair)
     return pairs
+
+def load_file_triples(filepath:str, delimiter:str=',') -> tp.List[tp.Tuple[str,str,str]]:
+    '''Load triples of file triples from a csv file and check that they exist.'''
+    pairs = load_file_tuples(filepath, delimiter, n=3)
+    return tp.cast(tp.List[tp.Tuple[str,str,str]], pairs)
+
+def load_file_pairs(filepath:str, delimiter:str=',') -> tp.List[tp.Tuple[str,str]]:
+    '''Load pairs of file paths from a csv file and check that they exist.'''
+    pairs = load_file_tuples(filepath, delimiter, n=2)
+    return tp.cast(tp.List[tp.Tuple[str,str]], pairs)
+
 
 def collect_inputfiles(splitfile_or_glob:str, *a, **kw) -> tp.List[str]:
     '''Return a list of input images, either from a csv split file or by expanding a glob'''
