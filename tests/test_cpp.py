@@ -11,33 +11,12 @@ import torch, torchvision
 import pytest
 
 from traininglib import torchscriptlib
+from traininglib import ts_cpp_interface
 
 LIB_PATH = './cpp/build/libTSinterface.so'
 
 
 
-def load_library(path:str):
-    assert os.path.exists(LIB_PATH), 'C++ interface library does no exist'
-
-    lib = ctypes.CDLL(LIB_PATH)
-    lib.initialize_module.restype  = ctypes.c_int32
-    lib.initialize_module.argtypes = [
-        ctypes.c_char_p,                                #inputbuffer
-        ctypes.c_size_t,                                #inputbuffersize
-    ]
-
-    lib.run_module.restype  = ctypes.c_int32
-    lib.run_module.argtypes = [
-        ctypes.c_char_p,                                #inputbuffer
-        ctypes.c_size_t,                                #inputbuffersize
-        ctypes.POINTER(ctypes.POINTER(ctypes.c_uint8)), #outputbuffer
-        ctypes.POINTER(ctypes.c_size_t),                #outputbuffersize
-        ctypes.c_bool,                                  #debug
-    ]
-
-    lib.free_memory.restype  = None
-    lib.free_memory.argtypes = [ctypes.POINTER(ctypes.c_uint8)]
-    return lib
 
 
 def create_output_pointers() -> tp.Tuple:
@@ -156,7 +135,7 @@ testdata = [
 @pytest.mark.parametrize("testitem", testdata)
 def test_initialize_module(testitem):
     print(f'==========TRAINING TEST: {testitem.desc}==========')
-    lib = load_library(LIB_PATH)
+    lib = ts_cpp_interface.load_library(LIB_PATH)
 
     invalid_bytes = b'banana'
     rc = lib.initialize_module(invalid_bytes, len(invalid_bytes))
