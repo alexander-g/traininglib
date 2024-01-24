@@ -12,6 +12,7 @@ class ZipArchive {
     ZipArchive();
     /** Archive for reading from existing */
     ZipArchive(const std::vector<char>& buffer);
+    ZipArchive(const char* data, size_t datasize);
     ~ZipArchive();
 
     size_t                   get_number_of_files() const;

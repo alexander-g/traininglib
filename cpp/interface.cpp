@@ -198,11 +198,8 @@ extern "C" {
               size_t*   outputbuffersize,
               bool      debug = false
     ) {
-        const std::vector<char> inputdata(
-            inputbuffer, inputbuffer + inputbuffersize
-        );
         try {
-            const ZipArchive archive(inputdata);
+            const ZipArchive archive((const char*)inputbuffer, inputbuffersize);
             const TensorDict inputfeed = read_inputfeed_from_archive(archive);
             torch::jit::IValue output  = global::module.forward(
                 {torch::IValue(inputfeed)}

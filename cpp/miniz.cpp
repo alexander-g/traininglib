@@ -9,14 +9,17 @@ public:
 };
 
 
-ZipArchive::ZipArchive(const std::vector<char>& buffer): pImpl(new ZipArchiveImpl()) {
+ZipArchive::ZipArchive(const char* data, size_t datasize): 
+    pImpl(new ZipArchiveImpl()){
+    
     mz_bool status;
-    status = mz_zip_reader_init_mem(
-        &this->pImpl->_archive, buffer.data(), buffer.size(), 0
-    );
+    status = mz_zip_reader_init_mem(&this->pImpl->_archive, data, datasize, 0);
     if(!status)
         throw new std::runtime_error("Could not initialize archive");
 }
+
+ZipArchive::ZipArchive(const std::vector<char>& buffer): 
+    ZipArchive(buffer.data(), buffer.size()) {}
 
 ZipArchive::ZipArchive(): pImpl(new ZipArchiveImpl()) {
     mz_bool status = mz_zip_writer_init_heap(&this->pImpl->_archive, 0, 1024);
