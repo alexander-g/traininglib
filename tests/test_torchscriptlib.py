@@ -1,4 +1,7 @@
 import typing as tp
+import os
+import tempfile
+
 import torch
 import numpy as np
 
@@ -23,6 +26,13 @@ class ConvBNAndLoss(torch.nn.Module):
             loss = torch.nn.functional.l1_loss(output, t)
             return loss, {}
 
+def save_reload(module:torch.jit.ScriptModule) -> torch.jit.ScriptModule:
+    '''Save and reload a scriptmodule to make sure state is reset'''
+    tempdir = tempfile.TemporaryDirectory()
+    tempf   = os.path.join(tempdir.name, 'module.torchscript')
+    module.save(tempf)
+    return torch.jit.load(tempf)
+
 def test_export_as_training():
     m  = ConvBNAndLoss()
     sd = {k:v.clone() for k,v in m.state_dict().items()}
@@ -38,17 +48,18 @@ def test_export_as_training():
     assert state_dicts_allclose(sd, m.state_dict())
 
     print(exported.torchscriptmodule.code)
+    torchscriptmodule = save_reload(exported.torchscriptmodule)
 
     n = 4
     ts_outputs = [ exported.trainingstate ]
     for i in range(n):
         inputfeed = ts_outputs[-1] | {'x0':x, 'x1':x, 't':t}
-        output    = exported.torchscriptmodule(inputfeed)
+        output    = torchscriptmodule(inputfeed)
         ts_outputs.append(output)
         print()
     
     assert state_dicts_allclose(sd, m.state_dict())
-    assert state_dicts_allclose(sd, exported.torchscriptmodule.state_dict())
+    assert state_dicts_allclose(sd, torchscriptmodule.state_dict())
 
 
 
@@ -74,7 +85,7 @@ def test_export_as_training():
             print(f'Eager Torch: {ea_val.ravel()[-5:]}')
             print(f'Diff:        {diff}')
 
-            assert np.allclose(ts_val, ea_val)
+            assert np.allclose(ts_val, ea_val), k
             print()
 
 

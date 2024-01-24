@@ -42,7 +42,7 @@ class TrainStep(torch.nn.Module):
         self.module    = torch.jit.script(module)
 
         # trainable model parameters with gradients
-        self.params = list(self.module.parameters())
+        self.params:tp.List[torch.nn.Parameter] = list(self.module.parameters())
         for p in self.params:
             p.grad = torch.zeros_like(p)
         self.gradients: TensorList = [
@@ -89,6 +89,18 @@ class TrainStep(torch.nn.Module):
         self.optimizer_fxt = torch.jit.trace(
             optimizer_step, (gradsdict, trainingstate), strict=False
         )
+
+        def get_gradients(params:tp.List[torch.Tensor]) -> tp.List[torch.Tensor]:
+            gradients:tp.List[torch.Tensor] = []
+            for p in params:
+                g = p.grad
+                if g is None or g.dtype==25:
+                    #don't know what exactly dtype 25 is but it seems to be the
+                    #c++/torchscript equivalent of None
+                    g = torch.zeros_like(p)
+                gradients.append(g)
+            return gradients
+        self.get_gradients = torch.jit.script(get_gradients)
  
         self.initial_trainingstate = trainingstate
         self.trainingstate_keys = list(trainingstate.keys())
@@ -97,8 +109,8 @@ class TrainStep(torch.nn.Module):
     
     def _prepare_forward(self, trainingstate:TensorDict) -> TensorDict:
         # zero_grad() does not work with torchscript
-        for g in self.gradients:
-            g[:] = torch.zeros_like(g)
+        for g in self.get_gradients(self.params):
+            g *= 0
         
         # set parameters from input
         old_modelstate = {k:p.clone() for k,p in self.modelstate.items()}
