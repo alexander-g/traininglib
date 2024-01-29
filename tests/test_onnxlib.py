@@ -10,6 +10,27 @@ import numpy as np
 import pytest
 
 
+#NOTE: this has to come first because of issues with custom onnx op registration
+#TODO: fix those issues
+def test_export_faster_rcnn():
+    model = torchvision.models.detection.fasterrcnn_resnet50_fpn(
+        weights=None, backbone_weights=None, progress=None
+    )
+    x = torch.randn(1, 3, 224, 224)
+    exported = onnxlib.export_model_inference(model, x, ['boxes', 'labels', 'scores'])
+
+    tempdir  = tempfile.TemporaryDirectory()
+    temppath = os.path.join(tempdir.name, 'model.pt.zip')
+    exported.save_as_zipfile(temppath, x.numpy())
+
+    session_options = ort.SessionOptions()
+    session_options.log_severity_level = 3
+    session = ort.InferenceSession(exported.onnx_bytes, session_options)
+    outputs = session.run(['boxes', 'scores'], exported.inputfeed|{'x':x.numpy()})
+    assert len(outputs) == 2
+
+
+
 class MiniResNet(torch.nn.Sequential):
     def __init__(self):
         super().__init__(
@@ -340,20 +361,3 @@ def test_maxpool_backward(args, desc):
     assert torch.allclose(torch_out, my_out)
     print()
 
-
-def test_export_faster_rcnn():
-    model = torchvision.models.detection.fasterrcnn_resnet50_fpn(
-        weights=None, backbone_weights=None, progress=None
-    )
-    x = torch.randn(1, 3, 224, 224)
-    exported = onnxlib.export_model_inference(model, x, ['boxes', 'labels', 'scores'])
-
-    tempdir  = tempfile.TemporaryDirectory()
-    temppath = os.path.join(tempdir.name, 'model.pt.zip')
-    exported.save_as_zipfile(temppath, x.numpy())
-
-    session_options = ort.SessionOptions()
-    session_options.log_severity_level = 3
-    session = ort.InferenceSession(exported.onnx_bytes, session_options)
-    outputs = session.run(['boxes', 'scores'], exported.inputfeed|{'x':x.numpy()})
-    assert len(outputs) == 2

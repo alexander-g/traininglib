@@ -1,5 +1,6 @@
 import typing as tp
 import importlib
+import copy
 import io
 import os
 import zipfile
@@ -21,12 +22,22 @@ def export_model_for_training(
     m:         torch.nn.Module,
     optimizer: torch.optim.Optimizer,
 ):  
+    m         = copy.deepcopy(m)
+    optimizer = copy.deepcopy(optimizer)
     trainstepmodule = TrainStep(m, optimizer)
+    #TODO: create a factory function rather than handling this in constructor
+    #XXX:  isnt this the factory function?
+    initial_trainingstate = trainstepmodule.initial_trainingstate
+    #deleting parameters to reduce saved file size
+    del trainstepmodule.initial_trainingstate
+    #TODO:this one doesnt work yet
+    #for p in trainstepmodule.parameters():
+    #    p.data = torch.empty(0)
     trainstepscript = torch.jit.script(trainstepmodule)
 
     return ExportedTrainingStep(
         torchscriptmodule = trainstepscript,
-        trainingstate     = trainstepmodule.initial_trainingstate,
+        trainingstate     = initial_trainingstate,
     )
 
 
@@ -43,12 +54,11 @@ class TrainStep(torch.nn.Module):
 
         # trainable model parameters with gradients
         paramsdict = {k:p for k,p in self.named_parameters()}
-        self.params:tp.List[torch.nn.Parameter] = list(paramsdict.values())
-        for p in self.params:
-            p.grad = torch.zeros_like(p)
-        self.gradients: TensorList = [
-            tp.cast(torch.Tensor, p.grad) for p in self.params
-        ]
+        params:tp.List[torch.nn.Parameter] = list(paramsdict.values())
+
+        self.get_gradients = torch.jit.script(_get_gradients)
+
+        gradients:TensorList = self.get_gradients(params)
         self.paramkeys  = list( paramsdict.keys() )
         # modelstate: trainable and non-trainable parameters (requires_grad)
         self.modelstate = (
@@ -57,7 +67,7 @@ class TrainStep(torch.nn.Module):
         )
         self.optimizer  = onnxlib.initialize_optimizer(optimizer)
 
-        gradsdict = dict(zip(self.paramkeys, self.gradients))
+        gradsdict = dict(zip(self.paramkeys, gradients))
         optimizerstate:TensorDict = _pack_optimizerstate(self.optimizer.buffers)
         optimizerkeys: tp.List[str] = list(optimizerstate.keys())
         trainingstate = self.modelstate | optimizerstate
@@ -90,27 +100,15 @@ class TrainStep(torch.nn.Module):
         self.optimizer_fxt = torch.jit.trace(
             optimizer_step, (gradsdict, trainingstate), strict=False
         )
-
-        def get_gradients(params:tp.List[torch.Tensor]) -> tp.List[torch.Tensor]:
-            gradients:tp.List[torch.Tensor] = []
-            for p in params:
-                g = p.grad
-                if g is None or g.dtype==25:
-                    #don't know what exactly dtype 25 is but it seems to be the
-                    #c++/torchscript equivalent of None
-                    g = torch.zeros_like(p)
-                gradients.append(g)
-            return gradients
-        self.get_gradients = torch.jit.script(get_gradients)
  
         self.initial_trainingstate = trainingstate
         self.trainingstate_keys = list(trainingstate.keys())
 
-
     
     def _prepare_forward(self, trainingstate:TensorDict) -> TensorDict:
         # zero_grad() does not work with torchscript
-        for g in self.get_gradients(self.params):
+        params = _extract_from_tensordict(self.modelstate, self.paramkeys)[0]
+        for g in self.get_gradients(params.values()):
             g *= 0
         
         # set parameters from input
@@ -121,7 +119,8 @@ class TrainStep(torch.nn.Module):
     def _set_modelstate(self, new_state:TensorDict) -> None:
         with torch.no_grad():
             for k,p in self.modelstate.items():
-                p.ravel()[:] = new_state[k].ravel()
+                #p.ravel()[:] = new_state[k].ravel()
+                torch.ops.aten.set_data(p, new_state[k])
 
     def _backward_step(
         self, 
@@ -129,9 +128,10 @@ class TrainStep(torch.nn.Module):
         trainingstate: TensorDict
     ) -> TensorDict:
         loss.backward()
+        params = _extract_from_tensordict(self.modelstate, self.paramkeys)[0]
         grads = [
              # ensure new tensor
-             torch.as_tensor(g).clone() for g in self.get_gradients(self.params)
+             torch.as_tensor(g).clone() for g in self.get_gradients(params.values())
         ]
         gradsdict = dict(zip(self.paramkeys, grads))
 
@@ -185,6 +185,19 @@ def _extract_from_tensordict(
             out_dict[k] = v
     return in_dict, out_dict
 
+
+def _get_gradients(params:TensorList) -> TensorList:
+    '''Return gradients from parameters, creating new tensors if needed.
+       torch.jit.script()-able.'''
+    gradients:TensorList = []
+    for p in params:
+        g = p.grad
+        if g is None or g.dtype==25:
+            #don't know what exactly dtype 25 is but it seems to be the
+            #c++/torchscript equivalent of None
+            g = torch.zeros_like(p)
+        gradients.append(g)
+    return gradients
 
 def _check_module_annotations(m:torch.nn.Module) -> None:
     annotations = m.forward.__annotations__
