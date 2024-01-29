@@ -42,13 +42,14 @@ class TrainStep(torch.nn.Module):
         self.module    = torch.jit.script(module)
 
         # trainable model parameters with gradients
-        self.params:tp.List[torch.nn.Parameter] = list(self.module.parameters())
+        paramsdict = {k:p for k,p in self.named_parameters()}
+        self.params:tp.List[torch.nn.Parameter] = list(paramsdict.values())
         for p in self.params:
             p.grad = torch.zeros_like(p)
         self.gradients: TensorList = [
             tp.cast(torch.Tensor, p.grad) for p in self.params
         ]
-        self.paramkeys  = list( dict(self.named_parameters()).keys() )
+        self.paramkeys  = list( paramsdict.keys() )
         # modelstate: trainable and non-trainable parameters (requires_grad)
         self.modelstate = (
             {k:v for k,v in self.named_parameters()}
@@ -129,8 +130,8 @@ class TrainStep(torch.nn.Module):
     ) -> TensorDict:
         loss.backward()
         grads = [
-            # ensure new tensor
-            torch.as_tensor(p.grad).clone() for p in self.params
+             # ensure new tensor
+             torch.as_tensor(g).clone() for g in self.get_gradients(self.params)
         ]
         gradsdict = dict(zip(self.paramkeys, grads))
 

@@ -14,9 +14,12 @@ class ConvBNAndLoss(torch.nn.Module):
             super().__init__(*a, **kw)
             self.seq = torch.nn.Sequential(
                 torch.nn.Conv2d(3,3, kernel_size=3, padding=1),
+                torch.nn.Conv2d(3,3, kernel_size=3, padding=1),
                 torch.nn.BatchNorm2d(3),
                 torch.nn.Conv2d(3,1, kernel_size=1, padding=0),
             )
+            #actual error case
+            self.seq[0].requires_grad_(False)
 
         def forward(self, inputs:TensorDict) -> tp.Tuple[torch.Tensor, TensorDict]:
             x0 = inputs['x0']
