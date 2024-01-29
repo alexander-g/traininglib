@@ -339,3 +339,21 @@ def test_maxpool_backward(args, desc):
     print('manual:', my_out.numpy().round(2), my_out.shape)
     assert torch.allclose(torch_out, my_out)
     print()
+
+
+def test_export_faster_rcnn():
+    model = torchvision.models.detection.fasterrcnn_resnet50_fpn(
+        weights=None, backbone_weights=None, progress=None
+    )
+    x = torch.randn(1, 3, 224, 224)
+    exported = onnxlib.export_model_inference(model, x, ['boxes', 'labels', 'scores'])
+
+    tempdir  = tempfile.TemporaryDirectory()
+    temppath = os.path.join(tempdir.name, 'model.pt.zip')
+    exported.save_as_zipfile(temppath, x.numpy())
+
+    session_options = ort.SessionOptions()
+    session_options.log_severity_level = 3
+    session = ort.InferenceSession(exported.onnx_bytes, session_options)
+    outputs = session.run(['boxes', 'scores'], exported.inputfeed|{'x':x.numpy()})
+    assert len(outputs) == 2

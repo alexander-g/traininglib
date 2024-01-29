@@ -65,11 +65,39 @@ class ExportedTrainingONNX(tp.NamedTuple):
     debug: DebugInfo|None = None
 
 
+def export_model_inference(
+    model:       torch.nn.Module,
+    inputs:      torch.Tensor,
+    outputnames: tp.List[str]|None = None,
+) -> ExportedInferenceONNX:
+    '''Export model inference via the default torch.onnx.export()'''
+    model.eval()
+    buffer = io.BytesIO()
+    torch.onnx.export(
+        model         = model,
+        args          = inputs,
+        f             = buffer,
+        export_params = False,
+        training      = torch.onnx.TrainingMode.EVAL,
+        input_names   = ['x'],
+        output_names  = outputnames,
+        verbose       = False,
+        do_constant_folding = False,
+    )
+    onnx_bytes = buffer.getvalue()
+    onnx_proto = onnx.load_from_string(onnx_bytes)
+    inputnames = [input.name for input in onnx_proto.graph.input]
+    state_dict = dict(model.state_dict())
+    inputfeed  = state_dict_to_onnx_input(state_dict, inputnames)
+    return ExportedInferenceONNX(onnx_bytes, inputfeed)
+
+
 
 def export_model_as_functional_inference_onnx(
     m: torch.nn.Module,
     x: torch.Tensor,
 ) -> ExportedInferenceONNX:
+    '''Export model inference via torch.fx. (Does not work with FasterRCNN)'''
     m.eval()
     sd = {k:v.clone() for k,v in dict(m.state_dict()).items()}
     
@@ -85,6 +113,7 @@ def export_model_as_functional_inference_onnx(
     inputnames  = list(sd.keys()) + ['x']
     outputnames = ['y']
 
+    register_custom_onnx_ops()
     buf = io.BytesIO()
     torch.onnx.export(
         fx, 
@@ -205,7 +234,7 @@ def export_model_as_functional_training_onnx(
         # _2nd_out = train_step_tx(sd, x, t, _init_out['buffers'])
         # outputnames   += [f'{k}.debug' for k in _2nd_out['debug'].keys()]
 
-
+    register_custom_onnx_ops()
     buf = io.BytesIO()
     torch.onnx.export(
         train_step_tx, 
@@ -635,7 +664,7 @@ def onnx_squeeze(g:GraphContext, x:torch.Value, dim:torch.Value|None = None):
         dims_to_squeeze = dims_to_squeeze[None]
     return g.op("Squeeze", x, g.op("Constant", value_t=dims_to_squeeze))
 
-torch.onnx.register_custom_op_symbolic('::squeeze', onnx_squeeze, opset_version=16)
+
 
 
 @onnxscript.script() # type: ignore [arg-type]
@@ -645,7 +674,7 @@ def onnx_sign(X):
 def aten_sgn(g:GraphContext, X:torch.Value):
     return g.onnxscript_op(onnx_sign, X).setType(X.type())
 
-torch.onnx.register_custom_op_symbolic('aten::sgn', aten_sgn, opset_version=16)
+
 
 
 @onnxscript.script() # type: ignore [arg-type]
@@ -662,9 +691,7 @@ def aten_threshold_backward(
         onnx_threshold, grad_output, self, threshold
     ).setType(grad_output.type())
 
-torch.onnx.register_custom_op_symbolic(
-    'aten::threshold_backward', aten_threshold_backward, opset_version=16
-)
+
 
 
 def aten_where(g:GraphContext, mask, x0, x1):
@@ -674,9 +701,7 @@ def aten_where(g:GraphContext, mask, x0, x1):
         x1 = g.op("CastLike", x1, x0)
     return g.op('Where', mask, x0, x1)
 
-torch.onnx.register_custom_op_symbolic(
-    'aten::where', aten_where, opset_version=16
-)
+
 
 
 def aten_addcdiv(
@@ -691,9 +716,7 @@ def aten_addcdiv(
     add   = g.op('Add', mul, input)
     return add
 
-torch.onnx.register_custom_op_symbolic(
-    'aten::addcdiv', aten_addcdiv, opset_version=16
-)
+
 
 
 
@@ -730,10 +753,6 @@ def aten_bnfunc(
     nrm.setType(rm.type())
     nrv.setType(rv.type())
     return y, sm,sv, nrm,nrv
-
-torch.onnx.register_custom_op_symbolic(
-    'aten::_native_batch_norm_legit_functional', aten_bnfunc, opset_version=16
-)
 
 
 @onnxscript.script() # type: ignore [arg-type]
@@ -795,11 +814,35 @@ def onnx_upsample_nearest2d_backward(
         repeats1_const
     ).setType(output_type)
 
-torch.onnx.register_custom_op_symbolic(
-    'aten::upsample_nearest2d_backward', 
-    onnx_upsample_nearest2d_backward, 
-    opset_version=16
-)
+
+
+def register_custom_onnx_ops():
+    torch.onnx.register_custom_op_symbolic(
+        '::squeeze', onnx_squeeze, opset_version=16
+    )
+    torch.onnx.register_custom_op_symbolic(
+        'aten::sgn', aten_sgn, opset_version=16
+    )
+    torch.onnx.register_custom_op_symbolic(
+        'aten::threshold_backward', aten_threshold_backward, opset_version=16
+    )
+    torch.onnx.register_custom_op_symbolic(
+        'aten::where', aten_where, opset_version=16
+    )
+    torch.onnx.register_custom_op_symbolic(
+        'aten::addcdiv', aten_addcdiv, opset_version=16
+    )
+    torch.onnx.register_custom_op_symbolic(
+        'aten::_native_batch_norm_legit_functional', 
+        aten_bnfunc, 
+        opset_version=16
+    )
+
+    torch.onnx.register_custom_op_symbolic(
+        'aten::upsample_nearest2d_backward', 
+        onnx_upsample_nearest2d_backward, 
+        opset_version=16
+    )
 
 
 def cleanup_graph(gm:torch.fx.graph_module.GraphModule):
