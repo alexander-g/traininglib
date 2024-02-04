@@ -2,24 +2,32 @@ name: Run unit tests
 
 on:
   workflow_dispatch:
+    inputs:
+      os:
+        description: 'Operating System'
+        required: true
+        type: choice
+        options:
+          - ubuntu-latest
+          - windows-latest
+          #- macos-latest
 
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    #runs-on: ubuntu-latest
+    runs-on: ${{ inputs.os }}
 
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
         with:
           submodules: 'recursive'
       
-      - uses: actions/setup-python@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-          #cache: 'pip' # caching pip dependencies
-      
-      - name: Install requirements
-        run: pip install -r requirements.frozen.txt
+          cache: 'pip' # caching pip dependencies
+          cache-dependency-path: '**/requirements.frozen.txt'
       
       - name: Setup cmake
         uses: jwlawson/actions-setup-cmake@v1.14
@@ -28,8 +36,20 @@ jobs:
         run: |
           mkdir cpp/build && cd cpp/build
           cmake ..
-          make
+          cmake --build . --config Release
           cd ../..
+      
+      - name: Archive C++ extension
+        uses: actions/upload-artifact@v4
+        with:
+          name: binaries
+          path: |
+            cpp/build/**/TSinterface.dll
+            cpp/build/*.so
+          retention-days: 1
+
+      - name: Install requirements
+        run: pip install -r requirements.frozen.txt
 
       - name: Run tests
-        run: ./run_tests.sh
+        run: bash ./run_tests.sh

@@ -1,6 +1,7 @@
 import typing as tp
 import ctypes
 import os
+import sys
 import tempfile
 import io
 import json
@@ -13,7 +14,10 @@ import pytest
 from traininglib import torchscriptlib
 from traininglib import ts_cpp_interface as ts_cpp
 
-LIB_PATH = './cpp/build/libTSinterface.so'
+LIB_PATH = (
+    './cpp/build/libTSinterface.so' if 'win32' not in sys.platform else 
+    './cpp/build/Release/TSinterface.dll'
+)
 
 
 

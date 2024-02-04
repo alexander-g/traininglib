@@ -39,7 +39,8 @@ def test_load_file_pairs():
     )
     output = datalib.load_file_pairs(filepath)
     assert len(output) == 3
-    assert output[1][1] == f'{tmpdir.name}/{subfolder}/mask1.png'
+    #NOTE: awkward use of join and / because of linux/windows issues
+    assert output[1][1] == f'{os.path.join(tmpdir.name, subfolder)}/mask1.png'
 
 
 def test_slice_stitch_images():

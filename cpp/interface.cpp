@@ -177,9 +177,15 @@ namespace global {
     torch::jit::script::Module module;
 }
 
+#ifdef _WIN32
+    #define EXPORT __declspec(dllexport)
+#else
+    #define EXPORT
+#endif
+
 extern "C" {
     /** Initialize a TorchScript module from a buffer. */
-    int32_t initialize_module(const uint8_t* pbuffer, const size_t buffersize) {
+    EXPORT int32_t initialize_module(const uint8_t* pbuffer, const size_t buffersize) {
         try {
             std::istringstream stream(
                 std::string(reinterpret_cast<const char*>(pbuffer), buffersize)
@@ -191,7 +197,7 @@ extern "C" {
         }
     }
 
-    int32_t run_module(
+    EXPORT int32_t run_module(
         const uint8_t*  inputbuffer,
         const size_t    inputbuffersize,
               uint8_t** outputbuffer,
@@ -216,7 +222,7 @@ extern "C" {
         }
     }
 
-    void free_memory(uint8_t* p) {
+    EXPORT void free_memory(uint8_t* p) {
         delete[] p;
     }
 }

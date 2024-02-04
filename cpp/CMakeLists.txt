@@ -5,8 +5,6 @@ project(torchscript_adapter)
 cmake_policy(SET CMP0135 NEW)
 
 
-
-
 include(FetchContent)
 set(JSON_URL https://github.com/nlohmann/json/releases/download/v3.11.3/json.tar.xz)
 message("Maybe downloading ${JSON_URL}")
@@ -36,7 +34,7 @@ message("Maybe downloading ${MINIZ_URL}")
 FetchContent_Declare(miniz  URL ${MINIZ_URL} )
 FetchContent_MakeAvailable(miniz)
 
-set(MINIZ_DIR ${CMAKE_BINARY_DIR}/_deps/miniz-src/)
+set(MINIZ_DIR ${miniz_SOURCE_DIR})
 #add_subdirectory(${MINIZ_DIR})
 #target_compile_options(miniz PRIVATE -fPIC)
 
@@ -45,10 +43,9 @@ set(MINIZ_DIR ${CMAKE_BINARY_DIR}/_deps/miniz-src/)
 
 
 
-add_library(TSinterface SHARED interface.cpp miniz.cpp)
+add_library(TSinterface SHARED interface.cpp miniz.cpp ${MINIZ_DIR}/miniz.c)
 set_property(TARGET TSinterface PROPERTY CXX_STANDARD 17)
 target_include_directories(TSinterface PRIVATE ${MINIZ_DIR})
-target_include_directories(TSinterface PRIVATE ${CMAKE_BINARY_DIR}/thirdparty/miniz)
 target_include_directories(TSinterface PRIVATE ${CMAKE_BINARY_DIR}/_deps/json-src/single_include/)
 target_include_directories(TSinterface PRIVATE ${CMAKE_BINARY_DIR}/_deps/pytorch-src/include/)
 target_link_libraries(TSinterface PRIVATE "${TORCH_LIBRARIES}")
