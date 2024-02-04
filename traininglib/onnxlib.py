@@ -374,7 +374,7 @@ def state_dict_to_onnx_input(
 ) -> tp.Dict[str, np.ndarray]:
     inputs = { k:v.data.numpy() for k,v in sd.items() }
     inputs = { k:v for k,v in inputs.items() if k in onnxnames }
-    assert len(inputs)
+    assert len(inputs) or len(onnxnames) == 0 or len(sd) == 0
     return inputs
 
 def buffers_to_onnx_input(
@@ -989,14 +989,15 @@ def move_nodes_to_submodule(
 
 
 def write_tensordict_to_zipfile(
-    zipf:    zipfile.ZipFile, 
+    zipf:    zipfile.ZipFile,
     x:       TensorDict|ArrayDict,
     x_extra: TensorDict|ArrayDict = {},
+    filename:str = 'inference.schema.json',
 ) -> None:
     '''Write arrays/tensors to the provided zip file similar to the 
        torch.package format, including a json schema describing the shape 
        and dtype. Arrays provided in `x_extra` are only stored in the schema.'''
-    base = os.path.basename(zipf.filename or '.')
+    base = os.path.splitext(os.path.basename(zipf.filename or '.'))[0]
 
     schema = {}
     for i,(k,v) in enumerate(x.items()):
@@ -1015,7 +1016,7 @@ def write_tensordict_to_zipfile(
             'dtype': str(v.dtype),
         }
     zipf.writestr(
-        f'{base}/onnx/inference.schema.json', json.dumps(schema, indent=2)
+        f'{base}/onnx/{filename}', json.dumps(schema, indent=2)
     )
 
 

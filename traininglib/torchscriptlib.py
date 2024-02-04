@@ -3,6 +3,7 @@ import importlib
 import copy
 import io
 import os
+import tempfile
 import zipfile
 
 import torch
@@ -17,6 +18,22 @@ LossFunction = tp.Callable[..., torch.Tensor]
 class ExportedTrainingStep(tp.NamedTuple):
     torchscriptmodule: torch.jit.ScriptModule
     trainingstate:     TensorDict
+
+    def save_as_zipfile(self, path:str, inputfeed:TensorDict) -> None:
+        if not path.endswith('.pt.zip'):
+            path = f'{path}.pt.zip'
+        base    = os.path.splitext(os.path.basename(path))[0]
+        tmpdir  = tempfile.TemporaryDirectory()
+        tmppath = os.path.join(tmpdir.name, 'training.torchscript')
+        self.torchscriptmodule.save(tmppath)
+        ts_bytes = open(tmppath, 'rb').read()
+        with zipfile.ZipFile(path, 'w') as zipf:
+            zipf.writestr(
+                f'{base}/onnx/training.torchscript', ts_bytes
+            )
+            onnxlib.write_tensordict_to_zipfile(
+                zipf, self.trainingstate, inputfeed, 'training.schema.json'
+            )
 
 def export_model_for_training(
     m:         torch.nn.Module,

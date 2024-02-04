@@ -43,6 +43,18 @@ class DetectionModule(BasicModule):
     def forward(self, inputfeed:TensorDict):
         return self._forward(inputfeed)
 
+class DetectionTrainStepModule(DetectionModule):
+    def forward(self, x:TensorDict) -> tp.Tuple[torch.Tensor, TensorDict]:
+        losses = self._forward(x)
+        loss: torch.Tensor = (
+            losses['loss_box_reg']
+            + losses['loss_classifier']
+            + losses['loss_objectness']
+            + losses['loss_rpn_box_reg']
+        )
+        logs:TensorDict = losses
+        return loss, logs
+
 
 
 class TS_CPP_Module:
