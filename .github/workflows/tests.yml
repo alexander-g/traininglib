@@ -1,0 +1,25 @@
+name: Run unit tests
+
+on:
+  workflow_dispatch:
+
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          submodules: 'recursive'
+      
+      - uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+          #cache: 'pip' # caching pip dependencies
+      
+      - name: Install requirements
+        run: pip install -r requirements.frozen.txt
+
+      - name: Run tests
+        run: ./run_tests.sh
