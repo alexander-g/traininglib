@@ -4,10 +4,11 @@ import glob
 import numpy as np
 import torch, torchvision
 import PIL.Image
+PIL.Image.MAX_IMAGE_PIXELS = None
 
 
 def create_dataloader(
-    ds:         torch.utils.data.Dataset, 
+    dataset, 
     batch_size: int, 
     shuffle:    bool=False, 
     num_workers:int|tp.Literal['auto'] = 'auto', 
@@ -16,10 +17,10 @@ def create_dataloader(
     if num_workers == 'auto':
         num_workers = os.cpu_count() or 1
     return torch.utils.data.DataLoader(
-        ds, 
+        dataset, 
         batch_size, 
         shuffle, 
-        collate_fn      = getattr(ds, 'collate_fn', None),
+        collate_fn      = getattr(dataset, 'collate_fn', None),
         num_workers     = num_workers, 
         pin_memory      = True,
         worker_init_fn  = lambda x: np.random.seed(torch.randint(0,1000,(1,))[0].item()+x),
@@ -65,7 +66,7 @@ def ensure_imagetensor(x:str|np.ndarray|torch.Tensor) -> torch.Tensor:
 
 def resize_tensor(
     x:    torch.Tensor, 
-    size: int|tp.Tuple[int,int]|torch.Size,
+    size: int|tp.Tuple[int,int]|torch.Size, 
     mode: tp.Literal['nearest', 'bilinear'],
     align_corners: bool|None = None,
 ) -> torch.Tensor:
@@ -79,17 +80,66 @@ def resize_tensor(
         y = y[0]
     return y
 
-def write_image(filepath:str, x:torch.Tensor, makedirs:bool=True) -> None:
-    assert torch.is_tensor(x)
-    assert x.dtype == torch.float32
-    assert x.min() >= 0 and x.max() <= 1
-    assert len(x.shape) == 3 and x.shape[0] == 3
+def to_device(*x:torch.Tensor, device:torch.device|str) -> tp.List[torch.Tensor]:
+    return [xi.to(device) for xi in x]
 
+interpolation_modes = {
+    'nearest':  torchvision.transforms.InterpolationMode.NEAREST,
+    'bilinear': torchvision.transforms.InterpolationMode.BILINEAR,
+}
+
+#TODO: get torchvision.transforms.v2 to work
+def random_crop(
+    *x:         torch.Tensor,
+    patchsize:  int, 
+    modes:      tp.List[tp.Literal['nearest', 'bilinear']],
+    cropfactors:tp.Tuple[float, float] = (0.75, 1.33),
+) -> tp.List[torch.Tensor]:
+    '''Perform random crops on multiple (BCHW) tensors'''
+    H,W = x[0].shape[-2:]
+    lo  = patchsize * cropfactors[0]
+    hi  = patchsize * cropfactors[1]
+    h   = int(lo + torch.rand(1) * (hi-lo))
+    w   = int(lo + torch.rand(1) * (hi-lo))
+    y0  = int(torch.rand(1) * (H - h))
+    x0  = int(torch.rand(1) * (W - w))
+
+    output = list(x)
+    for i in range(len(output)):
+        output[i] = torchvision.transforms.functional.resized_crop(
+            output[i], y0, x0, h, w, [patchsize]*2, interpolation_modes[modes[i]]
+        )
+    return output
+
+
+def random_rotate_flip(*x:torch.Tensor) -> tp.List[torch.Tensor]:
+    '''Perform random rotation and flip operations on multiple (BCHW) tensors'''
+    output = list(x)
+    k = np.random.randint(4)
+    for i in range(len(output)):
+        output[i] = torch.rot90(output[i], k, dims=(-2,-1))
+    if np.random.random() < 0.5:
+        for i in range(len(output)):
+            output[i] = torch.flip(output[i], dims=(-1,))
+    return output
+
+def write_image(filepath:str, x:np.ndarray, makedirs:bool=True) -> None:
+    assert len(x.shape) == 3 and x.shape[-1] == 3
+    if x.dtype in [np.float32, np.float64]:
+        x = (x * 255).astype('uint8')
+    
     if makedirs:
         os.makedirs(os.path.dirname(filepath), exist_ok=True)
-    PIL.Image.fromarray(
-        (x.cpu().detach().numpy().transpose(1,2,0) * 255).astype('uint8')
-    ).save(filepath)
+    PIL.Image.fromarray(x).save(filepath)
+
+def write_image_tensor(filepath:str, x:torch.Tensor, makedirs:bool=True) -> None:
+    assert torch.is_tensor(x)
+    #assert x.dtype == torch.float32
+    #assert x.min() >= 0 and x.max() <= 1
+    assert len(x.shape) == 3 and x.shape[0] == 3
+
+    x_np = x.cpu().detach().numpy().transpose(1,2,0)
+    return write_image(filepath, x_np, makedirs)
 
 
 Color = tp.Tuple[int,int,int]
@@ -113,22 +163,34 @@ def convert_rgb_to_mask(
     return mask[:,None]
 
 
-def load_file_pairs(filepath:str, delimiter:str=',') -> tp.List[tp.Tuple[str,str]]:
-    '''Load pairs of file paths from a csv file and check that they exist..'''
-
+def load_file_tuples(filepath:str, delimiter:str, n:int) -> tp.List[tp.List[str]]:
+    '''Load n-tuples of file paths from a csv file and check that they exist.'''
     lines = open(filepath, 'r').read().strip().split('\n')
     dirname = os.path.dirname(filepath)
-    pairs:tp.List[tp.Tuple[str,str]] = []
+    pairs:tp.List[tp.List[str]] = []
     for line in lines:
         pair = [f.strip() for f in line.split(delimiter)]
-        if len(pair) != 2:
-            raise Exception(f'File does not contain pairs delimited by "{delimiter}"')
+        if len(pair) != n:
+            raise Exception(
+                f'File does not contain {n}-tuples delimited by "{delimiter}"'
+            )
         #convert relative paths to absolute, starting from the textfile directory
         pair = [f if os.path.isabs(f) else os.path.join(dirname, f) for f in pair]
         if not all(os.path.exists(p) for p in pair):
             raise Exception(f'Files not found: {pair}')
-        pairs.append((pair[0], pair[1]))
+        pairs.append(pair)
     return pairs
+
+def load_file_triples(filepath:str, delimiter:str=',') -> tp.List[tp.Tuple[str,str,str]]:
+    '''Load triples of file triples from a csv file and check that they exist.'''
+    pairs = load_file_tuples(filepath, delimiter, n=3)
+    return tp.cast(tp.List[tp.Tuple[str,str,str]], pairs)
+
+def load_file_pairs(filepath:str, delimiter:str=',') -> tp.List[tp.Tuple[str,str]]:
+    '''Load pairs of file paths from a csv file and check that they exist.'''
+    pairs = load_file_tuples(filepath, delimiter, n=2)
+    return tp.cast(tp.List[tp.Tuple[str,str]], pairs)
+
 
 def collect_inputfiles(splitfile_or_glob:str, *a, **kw) -> tp.List[str]:
     '''Return a list of input images, either from a csv split file or by expanding a glob'''
@@ -137,7 +199,7 @@ def collect_inputfiles(splitfile_or_glob:str, *a, **kw) -> tp.List[str]:
         inputs = [i for i,a in pairs]
         return inputs
     else:
-        return glob.glob(splitfile_or_glob)
+        return sorted(glob.glob(splitfile_or_glob))
 
 
 #Helper functions for slicing images (for CHW dimension ordering)
@@ -168,7 +230,7 @@ def slice_into_patches_with_overlap(
 
 def stitch_overlapping_patches(
     patches:        tp.List[torch.Tensor], 
-    imageshape:     tp.Tuple[int,int], 
+    imageshape:     tp.Tuple[int,int]|torch.Size, 
     slack:          int                     = 32, 
     out:            torch.Tensor|None       = None,
 ) -> torch.Tensor:

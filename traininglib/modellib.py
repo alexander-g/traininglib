@@ -1,5 +1,7 @@
 import typing as tp
 import time, os, sys
+import argparse
+
 import numpy as np
 import torch, torchvision
 
@@ -42,7 +44,7 @@ class BaseModel(torch.nn.Module):
     def finalize_inference(self, raw:tp.List[torch.Tensor], x:torch.Tensor) -> np.ndarray:
         '''Convert raw batched outputs to the final result.
            x: original input image before preprocessing'''
-        assert len(raw) == 1
+        assert len(raw) == 1, NotImplementedError('Custom output batch handling required')
         return raw[0].cpu().numpy()[0]
     
     def preprocess(self, x: torch.Tensor) -> torch.Tensor:
@@ -54,7 +56,7 @@ class BaseModel(torch.nn.Module):
 
     def postprocess(self, raw: tp.Any, x: torch.Tensor) -> tp.Any:
         """Output postprocessing.
-           x: original input image before preprocessing"""
+           `x`: original input image before preprocessing"""
         return raw
 
     @property
@@ -101,23 +103,61 @@ class BaseModel(torch.nn.Module):
             # pe.save_text('model', 'class_list.txt', '\n'.join(self.class_list))
         return destination
     
+    def _start_training(
+        self,
+        TrainingTask: tp.Type,
+        trainsplit:   tp.List[tp.Any],
+        valsplit:     tp.List[tp.Any]|None = None,
+        *,
+        task_kw:      tp.Dict[str, tp.Any] = {},
+        fit_kw:       tp.Dict[str, tp.Any] = {},
+    ):
+        '''Internal method to start a training session.'''
+        assert len(trainsplit) > 0
+        task = TrainingTask(self, **task_kw)
+        return task.fit(trainsplit, valsplit, **fit_kw)
+    
     def start_training(
         self,
-        trainsplit:   tp.List[tp.Any],
-        DatasetClass: tp.Type,
-        TrainingTask: tp.Type,
-        ds_kw:        tp.Dict[str, tp.Any]        = {},
-        ld_kw:        tp.Dict[str, tp.Any]        = {},
-        task_kw:      tp.Dict[str, tp.Any]        = {},
-        fit_kw:       tp.Dict[str, tp.Any]        = {},
+        trainsplit: tp.List[tp.Any],
+        valsplit:   tp.List[tp.Any]|None = None,
+        *,
+        task_kw:    tp.Dict[str, tp.Any] = {},
+        fit_kw:     tp.Dict[str, tp.Any] = {},
     ):
-        assert len(trainsplit) > 0
-        ds    = DatasetClass(trainsplit, **ds_kw)
-        ld_kw = {'batch_size':4} | ld_kw
-        ld    = datalib.create_dataloader(ds, shuffle=True, **ld_kw)
-        print(f"Training on {len(ds)} images / {len(ld)} batches.")
-        task  = TrainingTask(self, **task_kw)
-        return task.fit(ld, **fit_kw)
+        '''Abstract public interface to start a training session.
+           Subclasses should implement it calling super()._start_training() 
+           and providing the task and dataset classes'''
+        raise NotImplementedError()
+
+
+def start_training_from_cli_args(
+    args:       argparse.Namespace,
+    model:      BaseModel, 
+    trainsplit: tp.List[tp.Any],
+    valsplit:   tp.List[tp.Any]|None  = None,
+    task_kw:    tp.Dict[str, tp.Any]  = {},
+    fit_kw:     tp.Dict[str, tp.Any]  = {},
+) -> bool:
+    '''`BaseModel.start_training()` with basic config provided by
+       command line arguments from `args.base_training_argparser()`'''
+    model, paths = util.prepare_for_training(model, args)
+    fit_kw  = {
+        'epochs':          args.epochs,
+        'lr':              args.lr,
+        'batch_size':      args.batchsize,
+        'checkpoint_dir':  paths.checkpointdir, 
+    } | fit_kw
+
+    model.start_training(
+        trainsplit = trainsplit, 
+        valsplit   = valsplit,
+        task_kw    = task_kw,
+        fit_kw     = fit_kw,
+    )
+    model = model.save(paths.modelpath)
+    os.remove(paths.modelpath_tmp)
+    return True
 
 
 def load_model(filename:str) -> BaseModel:
