@@ -82,3 +82,25 @@ def test_random_crop():
     assert t1_uniques.shape == (2,)
     assert 0 in t1_uniques
     assert 7.77 in t1_uniques
+
+
+import traininglib.segmentation.segmentationmodel as segm
+
+def test_torchscript_paste_patch():
+    x         = torch.rand([1,3,1024,2048])
+    slack     = torch.randint(20,50, (1,))
+    patchsize = torch.randint(100,400, (1,))
+    patches   = []
+    grid      = segm.grid_for_patches(segm.image_size(x), patchsize, slack)
+    n         = len(grid.reshape(-1,4))
+    for i in range(n):
+        patches += [segm.get_patch_from_grid(x, grid, torch.as_tensor(i))]
+    
+    assert len(patches) == grid.shape[0]*grid.shape[1]
+    assert patches[0].shape == (1, 3, patchsize, patchsize)
+
+    y = torch.zeros_like(x)
+    for i, patch in enumerate(patches):
+        y = segm.paste_patch(y, patch, grid, torch.as_tensor(i), slack)
+
+    assert np.all( x.numpy() == y.numpy() )

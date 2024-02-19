@@ -50,7 +50,8 @@ class BaseModel(torch.nn.Module):
     def preprocess(self, x: torch.Tensor) -> torch.Tensor:
         """Input preprocessing function. For both training as well as inference."""
         assert len(x.shape) == 4, 'Input to preprocess() should be batched'
-        x = datalib.resize_tensor(x, self.inputsize, "bilinear")
+        if x.shape[2] != self.inputsize or x.shape[3] != self.inputsize:
+            x = datalib.resize_tensor(x, self.inputsize, "bilinear")
         x = x.to(self.device).to(self.dtype)
         return x
 
