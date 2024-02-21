@@ -29,14 +29,24 @@ TensorDict = tp.Dict[str, torch.Tensor]
 StateDict  = TensorDict
 ArrayDict  = tp.Dict[str, np.ndarray]
 
+class TensorInfo(tp.NamedTuple):
+    name:  str
+    #shape may contain None for dynamic dimensions
+    shape: tp.Tuple[int|None, ...]
+    dtype: type
+
+TensorInfoDict = tp.Dict[str, TensorInfo]
+
+
+
 
 class ExportedInferenceONNX(tp.NamedTuple):
     #inference step in onnx format
     onnx_bytes: bytes
-    #onnx inputfeed, i.e. state dict, excluding `x`
+    #onnx inputfeed, i.e. state dict, excluding the actual inputs (e.g `x`)
     inputfeed:  tp.Dict[str, np.ndarray]
 
-    def save_as_zipfile(self, path:str, x:np.ndarray|ArrayDict) -> None:
+    def save_as_zipfile(self, path:str) -> None:
         if not path.endswith('.pt.zip'):
             path = f'{path}.pt.zip'
         base = os.path.splitext(os.path.basename(path))[0]
@@ -44,7 +54,8 @@ class ExportedInferenceONNX(tp.NamedTuple):
             zipf.writestr(
                 f'{base}/onnx/inference.onnx', self.onnx_bytes
             )
-            x_extra = {'x':x} if isinstance(x, np.ndarray) else x
+            input_info = get_onnx_inputs_info(self.onnx_bytes)
+            x_extra    = {k:v for k,v in input_info.items() if k not in self.inputfeed}
             write_tensordict_to_zipfile(zipf, self.inputfeed, x_extra)
 
 
@@ -995,7 +1006,7 @@ def move_nodes_to_submodule(
 def write_tensordict_to_zipfile(
     zipf:    zipfile.ZipFile,
     x:       TensorDict|ArrayDict,
-    x_extra: TensorDict|ArrayDict = {},
+    x_extra: TensorDict|ArrayDict|TensorInfoDict = {},
     filename:str = 'inference.schema.json',
 ) -> None:
     '''Write arrays/tensors to the provided zip file similar to the 
@@ -1014,7 +1025,7 @@ def write_tensordict_to_zipfile(
             'path':  vpath,
         }
     for k,v in x_extra.items():
-        v = np.array(v)
+        v = np.array(v) if torch.is_tensor(v) else v
         schema[k] = {
             'shape': list(v.shape),
             'dtype': str(v.dtype),
@@ -1093,3 +1104,23 @@ decompositions = {
     torch.ops.aten.lerp_.Scalar:
         torch.ops.aten.lerp.Scalar,
 }
+
+
+
+
+def get_onnx_inputs_info(onnx_bytes:bytes) -> TensorInfoDict:
+    '''Read the input names, shapes and dtypes from a onnx model.
+       Shape may contain `None` for dynamic dimensions.'''
+    model = onnx.load_model_from_string(onnx_bytes)
+    inputs_info = {}
+    for input_tensor in model.graph.input:
+        name  = input_tensor.name
+        ttype = input_tensor.type.tensor_type
+        shape = tuple(
+            None if 'dynamic' in dim.dim_param else dim.dim_value 
+                for dim in ttype.shape.dim
+        )
+        dtype = onnx.mapping.TENSOR_TYPE_TO_NP_TYPE[ttype.elem_type]
+        inputs_info[name] = TensorInfo(name, shape, dtype)
+    return inputs_info
+

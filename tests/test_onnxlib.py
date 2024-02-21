@@ -1,7 +1,9 @@
 import typing as tp
 import functools
+import json
 import os
 import tempfile
+import zipfile
 
 from traininglib import onnxlib, unet
 import onnxruntime as ort
@@ -17,11 +19,13 @@ def test_export_faster_rcnn():
         weights=None, backbone_weights=None, progress=None
     )
     x = torch.randn(1, 3, 224, 224)
-    exported = onnxlib.export_model_inference(model, x, ['boxes', 'labels', 'scores'])
+    exported = onnxlib.export_model_inference(
+        model, x, outputnames=['boxes', 'labels', 'scores']
+    )
 
     tempdir  = tempfile.TemporaryDirectory()
     temppath = os.path.join(tempdir.name, 'model.pt.zip')
-    exported.save_as_zipfile(temppath, x.numpy())
+    exported.save_as_zipfile(temppath)
 
     session_options = ort.SessionOptions()
     session_options.log_severity_level = 3
@@ -287,9 +291,27 @@ def test_inference(testitem:TestItem, desc:str):
     assert np.allclose(onnx_output, torch_output, atol=1e-7)
 
     tempdir = tempfile.TemporaryDirectory()
-    exported.save_as_zipfile(
-        os.path.join(tempdir.name, 'exported.pt.zip'), x.numpy()
+    exported.save_as_zipfile(os.path.join(tempdir.name, 'exported.pt.zip'))
+
+def test_inference_dynamic_shape():
+    m = torch.nn.Conv2d(3,1, kernel_size=3)
+    x = torch.ones([1,3,128,128])
+
+    exported = onnxlib.export_model_inference(
+        m, x, ['x'], ['y'], dynamic_axes={'x':[2]}
     )
+    tempdir = tempfile.TemporaryDirectory()
+    tempf   = os.path.join(tempdir.name, 'dynamic.pt.zip')
+    exported.save_as_zipfile(tempf)
+
+    with zipfile.ZipFile(tempf) as zipf:
+        onnx_file = [f for f in zipf.namelist() if f.endswith('inference.onnx')][0]
+        session = ort.InferenceSession(zipf.read(onnx_file))
+        assert session.get_inputs()[0].shape == [1,3,'x_dynamic_axes_1',128]
+
+        schema_file = [f for f in zipf.namelist() if f.endswith('inference.schema.json')][0]
+        jsondata = json.loads(zipf.read(schema_file))
+        assert jsondata['x']['shape'] == [1,3,None,128]
 
 
 
