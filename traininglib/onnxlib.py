@@ -36,7 +36,7 @@ class ExportedInferenceONNX(tp.NamedTuple):
     #onnx inputfeed, i.e. state dict, excluding `x`
     inputfeed:  tp.Dict[str, np.ndarray]
 
-    def save_as_zipfile(self, path:str, x:np.ndarray) -> None:
+    def save_as_zipfile(self, path:str, x:np.ndarray|ArrayDict) -> None:
         if not path.endswith('.pt.zip'):
             path = f'{path}.pt.zip'
         base = os.path.splitext(os.path.basename(path))[0]
@@ -44,7 +44,8 @@ class ExportedInferenceONNX(tp.NamedTuple):
             zipf.writestr(
                 f'{base}/onnx/inference.onnx', self.onnx_bytes
             )
-            write_tensordict_to_zipfile(zipf, self.inputfeed, {'x':x})
+            x_extra = {'x':x} if isinstance(x, np.ndarray) else x
+            write_tensordict_to_zipfile(zipf, self.inputfeed, x_extra)
 
 
 class DebugInfo(tp.NamedTuple):
@@ -67,8 +68,10 @@ class ExportedTrainingONNX(tp.NamedTuple):
 
 def export_model_inference(
     model:       torch.nn.Module,
-    inputs:      torch.Tensor,
+    inputs:      torch.Tensor|tp.Tuple[torch.Tensor, ...],
+    inputnames:  tp.List[str]|None = None,
     outputnames: tp.List[str]|None = None,
+    **kw
 ) -> ExportedInferenceONNX:
     '''Export model inference via the default torch.onnx.export()'''
     model.eval()
@@ -79,10 +82,11 @@ def export_model_inference(
         f             = buffer,
         export_params = False,
         training      = torch.onnx.TrainingMode.EVAL,
-        input_names   = ['x'],
+        input_names   = inputnames or ['x'],
         output_names  = outputnames,
         verbose       = False,
         do_constant_folding = False,
+        **kw
     )
     onnx_bytes = buffer.getvalue()
     onnx_proto = onnx.load_from_string(onnx_bytes)

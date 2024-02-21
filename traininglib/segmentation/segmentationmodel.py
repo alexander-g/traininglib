@@ -31,11 +31,13 @@ class SegmentationModel(BaseModel):
         inputsize:          int, 
         classes:            tp.List[Class],
         patchify:           bool|None       = None,
+        module:             torch.nn.Module|None = None,
         weights:            str|None        = None,
         weights_backbone:   str|None        = None,
     ):
         assert weights_backbone is None, NotImplemented
-        module = UNet(output_channels=len(classes))
+        if module is None:
+            module = UNet(output_channels=len(classes))
         super().__init__(module, inputsize)
         if weights is not None:
             load_weights(weights, self)
@@ -100,21 +102,34 @@ class SegmentationModel(BaseModel):
         )
     
 
-class SegmentationModel2(SegmentationModel):    
+class SegmentationModel2(SegmentationModel):
+    '''SegmentationModel that processes only a patch of the input at a time.
+       Exportable for ONNX inference. '''
     def forward(  # type: ignore[override]
         self, 
-        x: torch.Tensor, 
-        i: torch.Tensor,
-        y: torch.Tensor,
-    ) -> tp.Tuple[torch.Tensor, torch.Tensor]:
-        inputsize = image_size(x)
-        grid      = grid_for_patches(inputsize, self.inputsize, self.slack)
-        x_patch   = get_patch_from_grid(x, grid, i)
-        y_patch   = super().forward(x_patch)
-        y         = paste_patch(y, y_patch, grid, i, self.slack)
+        x_u8: torch.Tensor, 
+        i:    torch.Tensor,
+        y:    torch.Tensor,
+    ) -> tp.Tuple[torch.Tensor, ...]:
+        assert x_u8.dtype == torch.uint8, 'uint8 data expected for onnx'
+        assert x_u8.shape[3] == 3, 'RGB data expected for onnx'
+        x_chw = (x_u8).permute(0,3,1,2)
+
+        inputsize   = image_size(x_chw)
+        grid        = grid_for_patches(inputsize, self.inputsize, self.slack)
+        x_patch_u8  = get_patch_from_grid(x_chw, grid, i)
+        x_patch_f32 = x_patch_u8 / 255
+        y_patch     = super().forward(x_patch_f32)
+        y_patch     = y_patch.sigmoid()
+        y           = paste_patch(y, y_patch, grid, i, self.slack)
         
-        completed = ( i+1 >= grid.reshape(-1,4).size()[0] )
-        return y, completed
+        new_i       = i+1
+        completed   = ( new_i >= grid.reshape(-1,4).size()[0] )
+        return x_u8, y, completed, new_i
+    
+    def export_to_onnx(self):
+        pass
+
 
 @torch.jit.script
 def image_size(x:torch.Tensor) -> torch.Tensor:
@@ -132,10 +147,12 @@ def grid_for_patches(
 
     H,W       = torch.tensor(imageshape[0]), torch.tensor(imageshape[1])
     stepsize  = patchsize - slack
+    grid_y    = torch.arange(patchsize, H+stepsize, stepsize) # type: ignore
+    grid_x    = torch.arange(patchsize, W+stepsize, stepsize) # type: ignore
     grid      = torch.stack( 
         torch.meshgrid( 
-            torch.minimum( torch.arange(patchsize, H+stepsize, stepsize), H ), 
-            torch.minimum( torch.arange(patchsize, W+stepsize, stepsize), W ),
+            torch.minimum( grid_y, H ), 
+            torch.minimum( grid_x, W ),
             indexing='ij' 
         ), 
         dim = -1 
@@ -169,9 +186,6 @@ def paste_patch(
     slack:  int,
 ) -> torch.Tensor:
     assert output.ndim == 4, output.shape
-    assert grid.ndim == 3, grid.shape
-
-    output[:,:,:patch.shape[2], :patch.shape[3]] = patch
 
     imageshape = image_size(output)
     halfslack  = torch.as_tensor(slack//2)
