@@ -102,7 +102,7 @@ class SegmentationModel(BaseModel):
         )
     
 
-class SegmentationModel2(SegmentationModel):
+class SegmentationModel_ONNX(SegmentationModel):
     '''SegmentationModel that processes only a patch of the input at a time.
        Exportable for ONNX inference. '''
     def forward(  # type: ignore[override]
@@ -128,8 +128,23 @@ class SegmentationModel2(SegmentationModel):
         completed   = ( new_i >= grid.reshape(-1,4).size()[0] )
         return x_u8, y, completed, new_i
     
-    def export_to_onnx(self):
-        pass
+    def export_to_onnx(self, outputfile:str) -> bytes:
+        from traininglib import onnxlib
+        args = {
+            'x': torch.ones([1,1024,1024,3], dtype=torch.uint8),
+            'i': torch.tensor(0),
+            'y': torch.zeros([1,1,1,1]),
+        }
+        onnx_export = onnxlib.export_model_inference(
+            model        = self, 
+            inputs       = tuple(args.values()), 
+            inputnames   = list(args.keys()), 
+            outputnames  = ['x.output', 'y.output', 'completed', 'i.output'],
+            dynamic_axes = {'x':[1,2], 'y':[0,1,2,3]},
+        )
+        onnx_export.save_as_zipfile(outputfile)
+        return onnx_export.onnx_bytes
+
 
 
 @torch.jit.script
