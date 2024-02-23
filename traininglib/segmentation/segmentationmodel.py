@@ -121,6 +121,7 @@ class SegmentationModel2(SegmentationModel):
         x_patch_f32 = x_patch_u8 / 255
         y_patch     = super().forward(x_patch_f32)
         y_patch     = y_patch.sigmoid()
+        y           = maybe_new_y(x_chw, i, y)
         y           = paste_patch(y, y_patch, grid, i, self.slack)
         
         new_i       = i+1
@@ -136,6 +137,16 @@ def image_size(x:torch.Tensor) -> torch.Tensor:
     '''Height and width of a (B,C,H,W) tensor, dynamic even when tracing'''
     assert x.ndim == 4
     return torch.as_tensor(x.size()[-2:])
+
+@torch.jit.script
+def maybe_new_y(
+    x:torch.Tensor, 
+    i:torch.Tensor, 
+    y:torch.Tensor
+) -> torch.Tensor:
+    if i > 0:
+        return y
+    return torch.zeros(x[:,:1].shape, dtype=torch.float32, device=x.device)
 
 @torch.jit.script
 def grid_for_patches(
