@@ -149,13 +149,13 @@ class SegmentationModel_ONNX(SegmentationModel):
 
 
 
-@torch.jit.script
+@torch.jit.script_if_tracing
 def image_size(x:torch.Tensor) -> torch.Tensor:
     '''Height and width of a (B,C,H,W) tensor, dynamic even when tracing'''
     assert x.ndim == 4
     return torch.as_tensor(x.size()[-2:])
 
-@torch.jit.script
+@torch.jit.script_if_tracing
 def maybe_new_y(
     x:torch.Tensor, 
     i:torch.Tensor, 
@@ -165,7 +165,7 @@ def maybe_new_y(
         return y
     return torch.zeros(x[:,:1].shape, dtype=torch.float32, device=x.device)
 
-@torch.jit.script
+@torch.jit.script_if_tracing
 def grid_for_patches(
     imageshape: torch.Tensor,
     patchsize:  int, 
@@ -189,7 +189,7 @@ def grid_for_patches(
     grid      = torch.maximum(torch.tensor(0.0), grid)
     return grid
 
-@torch.jit.script
+@torch.jit.script_if_tracing
 def get_patch_from_grid(
     x:    torch.Tensor, 
     grid: torch.Tensor, 
@@ -198,14 +198,9 @@ def get_patch_from_grid(
     patch = grid.reshape(-1, 4)[i].long()
     return x[..., patch[0]:patch[2], patch[1]:patch[3]]
 
-# @torch.jit.script
-# def get_patch(x:torch.Tensor, i:torch.Tensor, patchsize:int, slack:int) -> torch.Tensor:
-#     xsize = image_size(x)
-#     grid  = grid_for_patches(xsize, patchsize, slack).reshape(-1, 4)
-#     return get_patch_from_grid(x, grid, i)
 
 
-@torch.jit.script
+@torch.jit.script_if_tracing
 def paste_patch(
     output: torch.Tensor, 
     patch:  torch.Tensor, 
@@ -244,26 +239,26 @@ def paste_patch(
     output[...,gi[0]:gi[2], gi[1]:gi[3]] = patch[...,di[0]:di[2], di[1]:di[3]]
     return output
 
-@torch.jit.script
+@torch.jit.script_if_tracing
 def randperm(n:int) -> torch.Tensor:
     '''torch.randperm(n) but ONNX-exportable'''
     return torch.argsort(torch.rand(n))
 
-@torch.jit.script
-def pad_to_3(x:torch.Tensor) -> torch.Tensor:
+@torch.jit.script_if_tracing
+def pad_to_n(x:torch.Tensor, n:int) -> torch.Tensor:
     xsize = torch.as_tensor(x.size())
     H     = xsize[2]
     W     = xsize[3]
-    pad_y = int( (torch.ceil(xsize[2] / 3).long() * 3) - H )
-    pad_x = int( (torch.ceil(xsize[3] / 3).long() * 3) - W )
+    pad_y = int( (torch.ceil(H / n).long() * n) - H )
+    pad_x = int( (torch.ceil(W / n).long() * n) - W )
     x_padded = torch.nn.functional.pad(x, [0, pad_x, 0, pad_y])
     return x_padded
 
-@torch.jit.script
-def strided_maxpool_3x3(x:torch.Tensor) -> torch.Tensor:
-    x_padded = pad_to_3(x)
+@torch.jit.script_if_tracing
+def maxpool_3x3_strided(x:torch.Tensor, stride:int) -> torch.Tensor:
+    x_padded = pad_to_n(x, n=stride)
     x_pooled = torch.nn.functional.max_pool2d(
-        x_padded, kernel_size=3, stride=3, padding=0
+        x_padded, kernel_size=3, stride=stride, padding=0
     )
     x_padded_size = x_padded.size()
     x_resized = torch.nn.functional.interpolate(
@@ -275,7 +270,7 @@ def strided_maxpool_3x3(x:torch.Tensor) -> torch.Tensor:
     x_sliced = x_resized[..., :xsize[2], :xsize[3]]
     return x_sliced
 
-@torch.jit.script
+
 def connected_components_max_pool(x:torch.Tensor) -> torch.Tensor:
     '''Inefficient connected components algorithm via maxpooling'''
     assert x.dtype == torch.bool
@@ -297,7 +292,7 @@ def connected_components_max_pool(x:torch.Tensor) -> torch.Tensor:
         else:
             # faster because of stride=3 but cannot use it exclusively 
             # because it will not converge
-            update = strided_maxpool_3x3(labeled)
+            update = maxpool_3x3_strided(labeled, stride=3)
         
         update = update * x
         change = (update != labeled)
@@ -307,7 +302,7 @@ def connected_components_max_pool(x:torch.Tensor) -> torch.Tensor:
         i += 1
     return labeled
 
-@torch.jit.script
+@torch.jit.script_if_tracing
 def finalize_connected_components(
     y:         torch.Tensor, 
     completed: torch.Tensor
