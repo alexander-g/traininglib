@@ -8,7 +8,7 @@ def _compute_neighbors(x:torch.Tensor) -> torch.Tensor:
     '''Compute the values P2...P9 for each pixel via convolutions'''
     kernels = torch.nn.functional.one_hot(torch.as_tensor([1,2,5,8,7,6,3,0]), 9)
     kernels = kernels.reshape([8,1,3,3]).float()
-    return torch.nn.functional.conv2d(x, kernels, padding=1)
+    return torch.nn.functional.conv2d(x.float(), kernels, padding=1).to(torch.bool)
 
 def compute_neighbors(x:torch.Tensor) -> torch.Tensor:
     '''Compute the values P2...P9 for each pixel via padding and slicing'''
@@ -34,7 +34,7 @@ def condition_a(P:torch.Tensor) -> torch.Tensor:
 
 def condition_b(P:torch.Tensor) -> torch.Tensor:
     '''Compute the number of 0-1 transitions in P2...P9'''
-    T_23 = ((P[:,0] == 0) & (P[:,1] == 1)).byte()
+    T_23 = ((P[:,0] == 0) & (P[:,1] == 1)).to(torch.int32) # i32 because of onnx
     T_34 = ((P[:,1] == 0) & (P[:,2] == 1)).byte()
     T_45 = ((P[:,2] == 0) & (P[:,3] == 1)).byte()
     T_56 = ((P[:,3] == 0) & (P[:,4] == 1)).byte()

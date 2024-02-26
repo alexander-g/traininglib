@@ -1,6 +1,8 @@
 import traininglib.segmentation.segmentationmodel as segm
 import traininglib.segmentation.skeletonization   as skel
 
+import io
+import onnxruntime as ort
 import torch
 
 
@@ -27,4 +29,19 @@ def test_skeletonization():
     assert torch.all(x_sk[0,0, :7,   :  ] == 0)
     assert torch.all(x_sk[0,0, 7,   7:87] == 1)
     assert torch.all(x_sk[0,0, 8:10, :  ] == 0)
+
+    buffer   = io.BytesIO()
+    torch.onnx.export(
+        skeletonize, 
+        (torch.zeros([1,1,64,64]),), 
+        buffer, 
+        input_names=['x'], 
+        dynamic_axes={'x':[2,3]},
+    )
+    onnx_bytes = buffer.getvalue()
+
+    sess_options = ort.SessionOptions()
+    sess_options.log_severity_level = 3
+    session = ort.InferenceSession(onnx_bytes, sess_options)
+    session.run(None, {'x':x.numpy()})
 
