@@ -313,7 +313,24 @@ def finalize_connected_components(
         y_binary = (y > 0.5)
         y_labels = connected_components_max_pool( y_binary )
     return y_labels
-        
+
+ 
+def connected_components_patchwise(x:torch.Tensor, patchsize:int) -> torch.Tensor:
+    assert x.ndim == 4
+    H,W = x.shape[-2:]
+    y   = torch.zeros(x.shape, dtype=torch.int64)
+    for i in range(0, H, patchsize):
+        for j in range(0, W, patchsize):
+            xpatch = x[..., i:, j:][...,:patchsize, :patchsize]
+            ypatch = connected_components_max_pool(xpatch)
+            #if i > 0:
+            #   #TODO: compare/merge with patch above
+            #if j > 0:
+            #   #TODO: compare/merge with patch left
+            y[...,i:, j:][..., :patchsize, :patchsize] = ypatch
+
+
+
 
 
 def classmap_to_rgb(classmap:np.ndarray, colors:tp.List[Color]) -> np.ndarray:
