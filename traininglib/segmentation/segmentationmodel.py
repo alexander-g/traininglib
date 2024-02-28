@@ -271,14 +271,14 @@ def maxpool_3x3_strided(x:torch.Tensor, stride:int) -> torch.Tensor:
     return x_sliced
 
 
-def connected_components_max_pool(x:torch.Tensor) -> torch.Tensor:
+def connected_components_max_pool(x:torch.Tensor, start:int = 0) -> torch.Tensor:
     '''Inefficient connected components algorithm via maxpooling'''
     assert x.dtype == torch.bool
     assert x.ndim == 4
 
     x = x.byte()
     n = len(x.reshape(-1))
-    labeled = torch.arange(1,n+1).float()
+    labeled = torch.arange(start,start+n).float()
     #shuffling makes convergence faster (in torchscript but not in onnx)
     #labeled = labeled[randperm(n)]
     labeled = labeled.reshape(x.size()) * x
@@ -315,22 +315,6 @@ def finalize_connected_components(
     return y_labels
 
  
-def connected_components_patchwise(x:torch.Tensor, patchsize:int) -> torch.Tensor:
-    assert x.ndim == 4
-    H,W = x.shape[-2:]
-    y   = torch.zeros(x.shape, dtype=torch.int64)
-    for i in range(0, H, patchsize):
-        for j in range(0, W, patchsize):
-            xpatch = x[..., i:, j:][...,:patchsize, :patchsize]
-            ypatch = connected_components_max_pool(xpatch)
-            #if i > 0:
-            #   #TODO: compare/merge with patch above
-            #if j > 0:
-            #   #TODO: compare/merge with patch left
-            y[...,i:, j:][..., :patchsize, :patchsize] = ypatch
-
-
-
 
 
 def classmap_to_rgb(classmap:np.ndarray, colors:tp.List[Color]) -> np.ndarray:
