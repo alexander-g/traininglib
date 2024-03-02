@@ -1,9 +1,11 @@
 import traininglib.segmentation.segmentationmodel as segm
 import traininglib.segmentation.skeletonization   as skel
+import traininglib.segmentation.connectedcomponents as concom
 
 import io
 import onnxruntime as ort
 import torch
+import numpy as np
 
 
 def test_connected_components():
@@ -12,9 +14,48 @@ def test_connected_components():
     a[..., 40:45, 20:70] = 1
     a[..., 50:90, 30:100] = 1
 
-    b = segm.connected_components_max_pool(a.bool())
+    b = concom.connected_components_max_pool(a.bool())
     assert b.shape == a.shape
     assert len(torch.unique(b)) == 4   # 3x blobs + zero
+
+
+def test_connected_components_patchwise():
+    a = torch.zeros([1,1,200,300])
+    #component 1
+    a[...,   5: 10, :]    = 1
+    a[..., 105:110, :]    = 1
+    a[...,   5:110, 290:] = 1
+    #component 2
+    a[..., 150:160, 50:160] = 2
+
+    b = concom.connected_components_patchwise(a.bool(), patchsize=100)
+    assert b.shape == a.shape
+    assert len(torch.unique(b)) == len(torch.unique(a)) # 2x components + zero
+    
+    @torch.jit.script
+    def concom_pw100(x:torch.Tensor) -> torch.Tensor:
+        return concom.connected_components_patchwise(x, patchsize=100)
+    session = _export_to_onnx(
+        concom_pw100, 
+        args=(torch.zeros([1,1,64,64]).bool(), )
+    )
+
+    b_onnx = session.run(None, {'x':a.bool().numpy()})
+    assert np.all(b_onnx == b.numpy())
+
+
+def test_adjacency_dfs():
+    adj = torch.as_tensor([
+        [1,2], #1
+        [3,4], #2
+        [5,6], #3
+        [7,1], #1
+        [8,2], #1
+    ])
+
+    labeled = concom.connected_components_from_adjacency_list(adj)
+    assert len(torch.unique(labeled)) == 3
+
 
 
 def test_skeletonization():
@@ -30,10 +71,15 @@ def test_skeletonization():
     assert torch.all(x_sk[0,0, 7,   7:87] == 1)
     assert torch.all(x_sk[0,0, 8:10, :  ] == 0)
 
+    session = _export_to_onnx(skeletonize)
+    session.run(None, {'x':x.numpy()})
+
+
+def _export_to_onnx(func, args=None, **kw):
     buffer   = io.BytesIO()
     torch.onnx.export(
-        skeletonize, 
-        (torch.zeros([1,1,64,64]),), 
+        torch.jit.script(func), 
+        args or (torch.zeros([1,1,64,64]),), 
         buffer, 
         input_names=['x'], 
         dynamic_axes={'x':[2,3]},
@@ -43,5 +89,4 @@ def test_skeletonization():
     sess_options = ort.SessionOptions()
     sess_options.log_severity_level = 3
     session = ort.InferenceSession(onnx_bytes, sess_options)
-    session.run(None, {'x':x.numpy()})
-
+    return session

@@ -11,6 +11,10 @@ from ..datalib import Color
 from ..unet import UNet
 from ..modellib import BaseModel, load_weights
 from .segmentationtraining import SegmentationTask
+from .connectedcomponents import (
+    connected_components_max_pool,
+    connected_components_patchwise
+)
 
 
 class Class(tp.NamedTuple):
@@ -100,11 +104,23 @@ class SegmentationModel(BaseModel):
             task_kw = task_kw, 
             fit_kw  = fit_kw
         )
-    
+   
 
 class SegmentationModel_ONNX(SegmentationModel):
     '''SegmentationModel that processes only a patch of the input at a time.
        Exportable for ONNX inference. '''
+    
+    def __init__(
+        self,
+        *a,
+        connected_components:bool = False,
+        skeletonize:bool          = False,
+        **kw,
+    ):
+        super().__init__(*a, **kw)
+        self.connected_components = connected_components
+        self.skeletonize = skeletonize
+    
     def forward(  # type: ignore[override]
         self, 
         x_u8: torch.Tensor, 
@@ -126,10 +142,14 @@ class SegmentationModel_ONNX(SegmentationModel):
         
         new_i       = i+1
         completed   = ( new_i >= grid.reshape(-1,4).size()[0] )
-        y_labels    = finalize_connected_components(y, completed)
+        if self.connected_components:
+            y_labels = finalize_connected_components(y, completed, self.inputsize)
+        if self.skeletonize:
+            #TODO
+            pass
 
         return x_u8, y, y_labels, completed, new_i
-    
+     
     def export_to_onnx(self, outputfile:str) -> bytes:
         from traininglib import onnxlib
         args = {
@@ -240,81 +260,19 @@ def paste_patch(
     return output
 
 @torch.jit.script_if_tracing
-def randperm(n:int) -> torch.Tensor:
-    '''torch.randperm(n) but ONNX-exportable'''
-    return torch.argsort(torch.rand(n))
-
-@torch.jit.script_if_tracing
-def pad_to_n(x:torch.Tensor, n:int) -> torch.Tensor:
-    xsize = torch.as_tensor(x.size())
-    H     = xsize[2]
-    W     = xsize[3]
-    pad_y = int( (torch.ceil(H / n).long() * n) - H )
-    pad_x = int( (torch.ceil(W / n).long() * n) - W )
-    x_padded = torch.nn.functional.pad(x, [0, pad_x, 0, pad_y])
-    return x_padded
-
-@torch.jit.script_if_tracing
-def maxpool_3x3_strided(x:torch.Tensor, stride:int) -> torch.Tensor:
-    x_padded = pad_to_n(x, n=stride)
-    x_pooled = torch.nn.functional.max_pool2d(
-        x_padded, kernel_size=3, stride=stride, padding=0
-    )
-    x_padded_size = x_padded.size()
-    x_resized = torch.nn.functional.interpolate(
-        x_pooled, [x_padded_size[2], x_padded_size[3]], mode='nearest'
-    )
-    # ones_3x3 = torch.ones(1,1,3,3)
-    # x_resized = torch.nn.functional.conv_transpose2d(x_pooled, ones_3x3, stride=3)
-    xsize    = x.size()
-    x_sliced = x_resized[..., :xsize[2], :xsize[3]]
-    return x_sliced
-
-
-def connected_components_max_pool(x:torch.Tensor, start:int = 0) -> torch.Tensor:
-    '''Inefficient connected components algorithm via maxpooling'''
-    assert x.dtype == torch.bool
-    assert x.ndim == 4
-
-    x = x.byte()
-    n = len(x.reshape(-1))
-    labeled = torch.arange(start,start+n).float()
-    #shuffling makes convergence faster (in torchscript but not in onnx)
-    #labeled = labeled[randperm(n)]
-    labeled = labeled.reshape(x.size()) * x
-
-    i = 0
-    while 1:
-        if i%2 == 0:
-            update = torch.nn.functional.max_pool2d(
-                labeled, kernel_size=3, stride=1, padding=1
-            )
-        else:
-            # faster because of stride=3 but cannot use it exclusively 
-            # because it will not converge
-            update = maxpool_3x3_strided(labeled, stride=3)
-        
-        update = update * x
-        change = (update != labeled)
-        if not torch.any(change):
-            break
-        labeled = update
-        i += 1
-    return labeled
-
-@torch.jit.script_if_tracing
 def finalize_connected_components(
     y:         torch.Tensor, 
-    completed: torch.Tensor
+    completed: torch.Tensor,
+    patchsize: int,
 ) -> torch.Tensor:
     assert completed.dtype == torch.bool and completed.ndim == 0
-    y_labels = torch.zeros([1,1,1,1])
+    y_labels = torch.zeros([1,1,1,1], dtype=torch.int64)
     if completed:
         y_binary = (y > 0.5)
-        y_labels = connected_components_max_pool( y_binary )
+        #y_labels = connected_components_max_pool( y_binary )
+        y_labels = connected_components_patchwise( y_binary, patchsize )
     return y_labels
 
- 
 
 
 def classmap_to_rgb(classmap:np.ndarray, colors:tp.List[Color]) -> np.ndarray:
