@@ -133,15 +133,18 @@ class SegmentationModel_ONNX(SegmentationModel):
 
         inputsize   = image_size(x_chw)
         grid        = grid_for_patches(inputsize, self.inputsize, self.slack)
-        x_patch_u8  = get_patch_from_grid(x_chw, grid, i)
-        x_patch_f32 = x_patch_u8 / 255
-        y_patch     = super().forward(x_patch_f32)
-        y_patch     = y_patch.sigmoid()
-        y           = maybe_new_y(x_chw, i, y)
-        y           = paste_patch(y, y_patch, grid, i, self.slack)
+        for i in torch.arange(i, i+1): # type: ignore
+            x_patch_u8  = get_patch_from_grid(x_chw, grid, i)
+            x_patch_f32 = x_patch_u8 / 255
+            y_patch     = super().forward(x_patch_f32)
+            y_patch     = y_patch.sigmoid()
+            #y_patch     = (y_patch > 0.5)
+            y           = maybe_new_y(x_chw, i, y)
+            y           = paste_patch(y, y_patch, grid, i, self.slack)
         
         new_i       = i+1
         completed   = ( new_i >= grid.reshape(-1,4).size()[0] )
+        y_labels    = y
         if self.connected_components:
             y_labels = finalize_connected_components(y, completed, self.inputsize)
         if self.skeletonize:
@@ -149,7 +152,7 @@ class SegmentationModel_ONNX(SegmentationModel):
             pass
 
         return x_u8, y, y_labels, completed, new_i
-     
+    
     def export_to_onnx(self, outputfile:str) -> bytes:
         from traininglib import onnxlib
         args = {
@@ -163,9 +166,53 @@ class SegmentationModel_ONNX(SegmentationModel):
             inputnames   = list(args.keys()), 
             outputnames  = ['x.output', 'y.output', 'labels', 'completed', 'i.output'],
             dynamic_axes = {'x':[1,2], 'y':[0,1,2,3]},
+            export_params = True,
         )
         onnx_export.save_as_zipfile(outputfile)
         return onnx_export.onnx_bytes
+
+
+
+TensorDict = tp.Dict[str, torch.Tensor]
+
+class SegmentationModel_TorchScript(torch.nn.Module):
+    def __init__(self, module:SegmentationModel_ONNX):
+        super().__init__()
+        self.module = module
+    
+    def forward(self, inputfeed:TensorDict) -> TensorDict:
+        x_u8, y, y_labels, completed, new_i = self.module(
+            inputfeed['x'],
+            inputfeed['i'],
+            inputfeed['y'],
+        )
+        return {
+            'x':         x_u8,
+            'y':         y,
+            'labels':    y_labels,
+            'completed': completed,
+            'i':         new_i,
+        }
+    
+    def export_to_torchscript(self, outputfile:str) -> None:
+        from traininglib import torchscriptlib
+        args = {
+            'x_u8': torch.ones([1,1024,1024,3], dtype=torch.uint8),
+            'i':    torch.tensor(0),
+            'y':    torch.zeros([1,1,1,1]),
+        }
+        args['x'] = args['x_u8']
+        traced = torch.jit.trace(self, args, strict=False)
+        #traced.save(outputfile)
+        exported = torchscriptlib.ExportedTorchScript(
+            torchscriptmodule = traced,
+            modulestate       = {},
+            name              = 'inference',
+        )
+        del args['x_u8']
+        exported.save_as_zipfile(outputfile, args)
+
+
 
 
 
@@ -195,8 +242,8 @@ def grid_for_patches(
 
     H,W       = torch.tensor(imageshape[0]), torch.tensor(imageshape[1])
     stepsize  = patchsize - slack
-    grid_y    = torch.arange(patchsize, H+stepsize, stepsize) # type: ignore
-    grid_x    = torch.arange(patchsize, W+stepsize, stepsize) # type: ignore
+    grid_y    = torch.arange(int(patchsize), int(H+stepsize), int(stepsize))
+    grid_x    = torch.arange(int(patchsize), int(W+stepsize), int(stepsize))
     grid      = torch.stack( 
         torch.meshgrid( 
             torch.minimum( grid_y, H ), 

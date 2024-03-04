@@ -59,21 +59,43 @@ class DetectionTrainStepModule(DetectionModule):
 
 class TS_CPP_Module:
     @classmethod
-    def initialize(
+    def initialize_from_module(
         cls, 
         path_to_lib: str, 
         module:      torch.nn.Module,
+    ) -> tp.Union["TS_CPP_Module", Exception]:
+        ts_bytes = export_module_to_torchscript_bytes(module)
+        return cls.initialize_from_torchscript_bytes(path_to_lib, ts_bytes)
+    
+    @classmethod
+    def initialize_from_ptzip(
+        cls, 
+        path_to_lib:   str, 
+        path_to_ptzip: str,
+    ) -> tp.Union["TS_CPP_Module", Exception]:
+        with zipfile.ZipFile(path_to_ptzip) as zipf:
+            ts_files = [f for f in zipf.namelist() if f.endswith('.torchscript')]
+            if len(ts_files) == 0:
+                return Exception('Zipfile does not contain torschript files')
+            if len(ts_files) > 1:
+                return Exception('Zipfile contains multiple torschript files')
+            ts_bytes = zipf.read(ts_files[0])
+        return cls.initialize_from_torchscript_bytes(path_to_lib, ts_bytes)
+
+    @classmethod
+    def initialize_from_torchscript_bytes(
+        cls, 
+        path_to_lib:   str, 
+        ts_bytes:      bytes,
     ) -> tp.Union["TS_CPP_Module", Exception]:
         try:
             lib = load_library(path_to_lib)
         except Exception as e:
             return e
         
-        ts_bytes = export_module_to_torchscript_bytes(module)
         rc = lib.initialize_module(ts_bytes, len(ts_bytes))
         if rc != 0:
             return Exception('Failed to initialize torchscript module')
-        
         return cls(lib)
     
     def __init__(self, lib:ctypes.CDLL):

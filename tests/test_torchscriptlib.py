@@ -54,7 +54,7 @@ def test_export_as_training():
     torchscriptmodule = save_reload(exported.torchscriptmodule)
 
     n = 4
-    ts_outputs = [ exported.trainingstate ]
+    ts_outputs = [ exported.modulestate ]
     for i in range(n):
         inputfeed = ts_outputs[-1] | {'x0':x, 'x1':x, 't':t}
         output    = torchscriptmodule(inputfeed)

@@ -95,7 +95,7 @@ def test_invalid_inputs(testitem):
 def test_run_module(testitem):
     print(f'==========TRAINING TEST: {testitem.desc}==========')
     m   = testitem.module
-    lib = ts_cpp.TS_CPP_Module.initialize(LIB_PATH, m)
+    lib = ts_cpp.TS_CPP_Module.initialize_from_module(LIB_PATH, m)
     assert not isinstance(lib, Exception)
 
     ms  = torch.jit.script(m)
@@ -114,3 +114,30 @@ def test_run_module(testitem):
 
 
     #assert 0
+
+
+def test_run_module_from_ptzip():
+    from traininglib.segmentation import segmentationmodel
+    segm = segmentationmodel.SegmentationModel_ONNX(
+        module    = torch.nn.Conv2d(3,1,kernel_size=3, padding=1),
+        inputsize = 64,
+        classes   = [],
+        patchify   = True,
+    )
+    m = segmentationmodel.SegmentationModel_TorchScript(segm)
+    tempdir = tempfile.TemporaryDirectory()
+    tempf   = os.path.join(tempdir.name, 'module.pt.zip')
+    m.export_to_torchscript(tempf)
+
+    lib = ts_cpp.TS_CPP_Module.initialize_from_ptzip(LIB_PATH, tempf)
+    assert not isinstance(lib, Exception)
+
+    inputfeed = {
+        'x': torch.ones([1,128,128,3], dtype=torch.uint8),
+        'i': torch.tensor(0),
+        'y': torch.ones([1,1,1,1]),
+    }
+    output = lib.run(inputfeed)
+    assert not isinstance(output, Exception), output
+
+

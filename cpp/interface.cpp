@@ -50,15 +50,18 @@ json read_inference_schema_from_archive(const ZipArchive& archive){
 }
 
 at::ScalarType string_to_dtype(const std::string& dtypestring) {
-    if (dtypestring == "float32") {
+    if (dtypestring == "float32")
         return torch::kFloat32;
-    } else if (dtypestring == "float64") {
+    else if (dtypestring == "float64")
         return torch::kFloat64;
-    } else if (dtypestring == "int64") {
+    else if (dtypestring == "int64")
         return torch::kInt64;
-    } else {
-        throw new std::runtime_error("Unsupported dtype: " + dtypestring);
-    }
+    else if (dtypestring == "uint8")
+        return torch::kUInt8;
+    else if (dtypestring == "bool")
+        return torch::kBool;
+    else
+        throw std::runtime_error("Unsupported dtype: " + dtypestring);
 }
 
 std::string dtype_to_string(const caffe2::TypeMeta& dtype) {
@@ -68,8 +71,12 @@ std::string dtype_to_string(const caffe2::TypeMeta& dtype) {
         return "float64";
     else if (dtype == torch::kInt64)
         return "int64";
+    else if (dtype == torch::kUInt8)
+        return "uint8";
+    else if (dtype == torch::kBool)
+        return "bool";
     else
-        throw new std::runtime_error("Unsupported dtype");
+        throw std::runtime_error("Unsupported dtype");
 }
 
 int64_t shape_to_size(const std::vector<int64_t> shape) {
@@ -87,13 +94,13 @@ read_tensor_from_archive(const ZipArchive& archive, const json& schemaitem) {
     const auto shape = schemaitem.find("shape");
     const auto end   = schemaitem.end();
     if(path == end || dtype == end || shape == end)
-        throw new std::runtime_error("Invalid schema item");
+        throw std::runtime_error("Invalid schema item");
     
     std::vector<uint8_t> data = archive.read_file(*path);
     const std::vector<int64_t> shapevec = shape->get<std::vector<int64_t>>();
     //TODO: need to multiply with element size
     // if( shape_to_size(shapevec) != data.size() )
-    //     throw new std::runtime_error("Schema shape does not correspond to data");
+    //     throw std::runtime_error("Schema shape does not correspond to data");
     
     return torch::from_blob(data.data(), shapevec, string_to_dtype(*dtype)).clone();
 }
@@ -139,13 +146,13 @@ std::vector<uint8_t> write_tensordict_to_archive(const TensorDict& data) {
 
 TensorDict to_tensordict(const torch::jit::IValue& x) {
     if(!x.isGenericDict())
-        throw new std::runtime_error("Value is not a dict");
+        throw std::runtime_error("Value is not a dict");
     
     const torch::Dict<c10::IValue, c10::IValue> x_dict = x.toGenericDict();
     torch::Dict<std::string, torch::Tensor> result;
     for (const auto& pair : x_dict) {
         if(!pair.key().isString() || !pair.value().isTensor())
-            throw new std::runtime_error("Dict is not a string-tensor dict.");
+            throw std::runtime_error("Dict is not a string-tensor dict.");
 
         result.insert(pair.key().toString()->string(), pair.value().toTensor());
     }

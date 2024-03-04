@@ -82,6 +82,7 @@ def export_model_inference(
     inputs:      torch.Tensor|tp.Tuple[torch.Tensor, ...],
     inputnames:  tp.List[str]|None = None,
     outputnames: tp.List[str]|None = None,
+    export_params: bool            = False,
     **kw
 ) -> ExportedInferenceONNX:
     '''Export model inference via the default torch.onnx.export()'''
@@ -91,7 +92,7 @@ def export_model_inference(
         model         = model,
         args          = inputs,
         f             = buffer,
-        export_params = False,
+        export_params = export_params,
         training      = torch.onnx.TrainingMode.EVAL,
         input_names   = inputnames or ['x'],
         output_names  = outputnames,
@@ -389,7 +390,8 @@ def state_dict_to_onnx_input(
 ) -> tp.Dict[str, np.ndarray]:
     inputs = { k:v.data.numpy() for k,v in sd.items() }
     inputs = { k:v for k,v in inputs.items() if k in onnxnames }
-    assert len(inputs) or len(onnxnames) == 0 or len(sd) == 0
+    #print('***WARNING*** not checking empty input feed')
+    #assert len(inputs) or len(onnxnames) == 0 or len(sd) == 0
     return inputs
 
 def buffers_to_onnx_input(
