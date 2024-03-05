@@ -115,6 +115,29 @@ TensorDict read_inputfeed_from_archive(const ZipArchive& archive) {
     return inputfeed;
 }
 
+torch::Tensor create_tensorview_from_schema_item(const json& schemaitem) {
+    const auto addr  = schemaitem.find("address");
+    const auto dtype = schemaitem.find("dtype");
+    const auto shape = schemaitem.find("shape");
+    const auto end   = schemaitem.end();
+    if(addr == end || dtype == end || shape == end)
+        throw std::runtime_error("Invalid schema item");
+    
+    const std::vector<int64_t> shapevec = shape->get<std::vector<int64_t>>();
+    void* address = (void*) addr->get<uint64_t>();
+    return torch::from_blob(address, shapevec, string_to_dtype(*dtype));
+}
+
+TensorDict read_tensordict_from_json(const std::vector<uint8_t>& jsonbuffer) {
+    const json schema = json::parse(jsonbuffer);
+    TensorDict inputfeed;
+    for (auto item = schema.begin(); item != schema.end(); ++item) {
+        const torch::Tensor t = create_tensorview_from_schema_item(item.value());
+        inputfeed.insert(item.key(), t);
+    }
+    return inputfeed;
+}
+
 std::vector<uint8_t> write_tensordict_to_archive(const TensorDict& data) {
     json schema({});
     ZipArchive archive;
@@ -169,6 +192,54 @@ void write_data_to_output(
     std::memcpy(*outputbuffer, data.data(), data.size());
 }
 
+
+void write_tensordict_to_outputbuffer(
+    const TensorDict& data,
+    uint8_t**         outputbuffer,
+    size_t*           outputbuffersize
+) {
+    size_t datasize = 0;
+    json schema({});
+    for(const auto& item: data){
+        const torch::Tensor& t = item.value();
+        const auto& key        = item.key();
+
+        datasize += t.nbytes();
+
+        json schema_item;
+        schema_item["address"] = 0xffffffffffffffff;  //placeholder
+        schema_item["dtype"]   = dtype_to_string(t.dtype());
+        schema_item["shape"]   = t.sizes();
+        schema[key]            = schema_item;
+    }
+    std::string schema_str = schema.dump();
+
+    uint8_t* buffer     = new uint8_t[datasize + schema_str.size()];
+    size_t bytes_copied = 0;
+    for(const auto& item: data){
+        const torch::Tensor& t = item.value();
+        const auto& key        = item.key();
+
+        //copy the tensor data to the newly allocated buffer
+        uint8_t* address       = buffer + schema_str.size() + bytes_copied;
+        std::memcpy(address, t.data_ptr(), t.nbytes());
+        bytes_copied          += t.nbytes();
+
+        //update the address in the schema
+        json schema_item       = schema[key];
+        schema_item["address"] = (uint64_t) address;
+        schema[key]            = schema_item;
+    }
+    //update the schema string with the new addresses
+    schema_str = schema.dump();
+    std::memcpy(buffer, schema_str.data(), schema_str.size() );
+
+    *outputbuffer     = buffer;
+    //tell caller only about json schema, the rest just hangs around until delete
+    *outputbuffersize = schema_str.size();
+}
+
+
 void handle_eptr(std::exception_ptr eptr){
     try{
         if (eptr)
@@ -212,15 +283,18 @@ extern "C" {
               bool      debug = false
     ) {
         try {
-            const ZipArchive archive((const char*)inputbuffer, inputbuffersize);
-            const TensorDict inputfeed = read_inputfeed_from_archive(archive);
+            const auto t0{std::chrono::steady_clock::now()};
+            const TensorDict inputfeed = read_tensordict_from_json(
+                std::vector<uint8_t>(inputbuffer, inputbuffer+inputbuffersize)
+            );
+            const auto t1{std::chrono::steady_clock::now()};
             torch::jit::IValue output  = global::module.forward(
                 {torch::IValue(inputfeed)}
             );
-            const std::vector<uint8_t> archivedata = \
-                write_tensordict_to_archive(to_tensordict(output));
-            write_data_to_output(archivedata, outputbuffer, outputbuffersize);
-
+            const auto t2{std::chrono::steady_clock::now()};
+            write_tensordict_to_outputbuffer(
+                to_tensordict(output), outputbuffer, outputbuffersize
+            );
             return 0;
         } catch (...) {
             if(debug)

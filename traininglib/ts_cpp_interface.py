@@ -102,13 +102,13 @@ class TS_CPP_Module:
         self.lib = lib
     
     def run(self, inputfeed:tslib.TensorDict) -> tslib.TensorDict|Exception:
-        inputs:bytes = tslib.pack_tensordict(inputfeed)
+        inputs:bytes = tensordict_to_json_schema(inputfeed)
         output_pointers = create_output_pointers()
         rc = self.lib.run_module(inputs, len(inputs), *output_pointers, True)
         if rc != 0:
             return Exception('Failed to run module')
         output_bytes = output_pointers_to_bytes(*output_pointers)
-        output       = output_bytes_to_tensordict(output_bytes)
+        output       = json_schema_to_tensordict(output_bytes)
         self.lib.free_memory(output_pointers[0]._obj)
         return output
 
@@ -160,7 +160,7 @@ def create_output_pointers() -> tp.Tuple:
 def output_pointers_to_bytes(data_p, size_p) -> bytes:
     return ctypes.string_at(data_p._obj, size_p._obj.value)
 
-def output_bytes_to_tensordict(data:bytes) -> TensorDict|Exception:
+def ziparchive_to_tensordict(data:bytes) -> TensorDict|Exception:
     buffer = io.BytesIO(data)
     with zipfile.ZipFile(buffer) as zipf:
         paths = zipf.namelist()
@@ -195,4 +195,50 @@ def output_bytes_to_tensordict(data:bytes) -> TensorDict|Exception:
             
             result[key] = tensor
     return result
+
+
+def tensordict_to_json_schema(tensordict:TensorDict) -> bytes:
+    schema: tp.Dict[str, tp.Any] = {}
+    for key,tensor in tensordict.items():
+        array = np.asarray(tensor)
+        schema[key] = {
+            'shape':   list(array.shape),
+            'dtype':   str(array.dtype),
+            'address': array.__array_interface__['data'][0],
+        }
+    return json.dumps(schema, ensure_ascii=True).encode('ascii')
+
+def shape_to_size(shape:tp.List[int]) -> int:
+    return int(np.prod([1]+shape))
+
+def json_schema_to_tensordict(data:bytes) -> TensorDict|Exception:
+    try:
+        jsonobject = json.loads(data)
+    except Exception as e:
+        return e
+    
+    if not isinstance(jsonobject, dict):
+        return ValueError(f'Expected JSON object, received {type(jsonobject)}')
+    
+    tensordict:TensorDict = {}
+    for key, schema_item in jsonobject.items():
+        if (
+                   'address' not in schema_item 
+                or 'shape' not in schema_item 
+                or 'dtype' not in schema_item
+            ):
+                return Exception('Invalid schema')
+
+        address = schema_item.get('address')
+        dtype   = schema_item.get('dtype')
+        shape   = schema_item.get('shape')
+        size    = shape_to_size(shape)
+        nbytes  = size * np.dtype(dtype).itemsize
+
+        array = np.frombuffer(  # type: ignore
+            (ctypes.c_ubyte * nbytes).from_address(address), dtype
+        ).reshape(shape).copy()
+        tensordict[key] = torch.as_tensor(array)
+    return tensordict
+
 
