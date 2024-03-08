@@ -15,6 +15,7 @@ from .connectedcomponents import (
     connected_components_max_pool,
     connected_components_patchwise
 )
+from .skeletonization import skeletonize
 
 
 class Class(tp.NamedTuple):
@@ -147,11 +148,12 @@ class SegmentationModel_ONNX(SegmentationModel):
         y_labels    = y
         if self.connected_components:
             y_labels = finalize_connected_components(y, completed, self.inputsize)
+            
+        y_skeleton  = y
         if self.skeletonize:
-            #TODO
-            pass
+            y_skeleton = finalize_skeletonize( (y>0.5), completed )
 
-        return x_u8, y, y_labels, completed, new_i
+        return x_u8, y, y_labels, y_skeleton, completed, new_i
     
     def export_to_onnx(self, outputfile:str) -> bytes:
         from traininglib import onnxlib
@@ -320,6 +322,17 @@ def finalize_connected_components(
         y_labels = connected_components_patchwise( y_binary, patchsize )
     return y_labels
 
+@torch.jit.script_if_tracing
+def finalize_skeletonize(
+    binarymap:torch.Tensor, 
+    completed:torch.Tensor
+) -> torch.Tensor:
+    assert completed.dtype == torch.bool and completed.ndim == 0
+    assert binarymap.dtype == torch.bool
+    skeleton = torch.zeros([1,1,1,1], dtype=torch.bool)
+    if completed:
+        skeleton = skeletonize(binarymap)
+    return skeleton
 
 
 def classmap_to_rgb(classmap:np.ndarray, colors:tp.List[Color]) -> np.ndarray:
