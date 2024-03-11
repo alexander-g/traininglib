@@ -87,3 +87,81 @@ def skeletonize(x:torch.Tensor) -> torch.Tensor:
 
 
 
+
+@torch.jit.script_if_tracing
+def find_endpoints(x:torch.Tensor) -> torch.Tensor:
+    '''Find endpoints of a skeletonized structure'''
+    assert x.ndim == 2
+
+    k = torch.ones([1,1,3,3])
+    k[..., 1,1] = 0
+    r = torch.nn.functional.conv2d(x.float()[None,None], k, padding=1)[0,0]
+    return torch.nonzero((r == 1) & x.to(torch.bool))
+
+@torch.jit.script_if_tracing
+def distance_matrix(p:torch.Tensor) -> torch.Tensor:
+    assert p.ndim == 2
+    return ((p[:,None] - p[None])**2).sum(-1)**0.5
+
+@torch.jit.script_if_tracing
+def get_maximum_distance_points(p:torch.Tensor) -> torch.Tensor:
+    assert p.ndim == 2
+    dmat = distance_matrix(p)
+    ixs  = torch.nonzero(dmat == dmat.max())[0]
+    return torch.stack([
+        p[ixs[0]], 
+        p[ixs[1]],
+    ])
+
+@torch.jit.script_if_tracing
+def path_via_dfs(x:torch.Tensor) -> torch.Tensor:
+    '''Find the longest path in a skeleton binary image'''
+    assert x.ndim == 2
+    assert x.dtype == torch.bool
+
+    #pad to prevent negative indices
+    x = torch.nn.functional.pad(x, (1,0,1,0))
+
+    endpoints = find_endpoints(x)
+    if len(endpoints) < 2:
+        return torch.empty([0,2])
+    
+    #TODO: error handling if len(endpoints) < 2
+    dmat      = distance_matrix(endpoints)
+    p0        = get_maximum_distance_points(endpoints)[0]
+    stack     = p0[None]
+    visited   = v = ~x
+
+    # predecessor nodes per pixel
+    prev = -torch.ones(x.shape+(2,)).long()
+    # distance to starting point per pixel
+    dist = -torch.ones(x.shape).long()
+    dist[p0[0], p0[1]] = 0
+
+    while len(stack) > 0:
+        p, stack = stack[0], stack[1:]
+        if v[p[0], p[1]] == 1:
+            continue
+        distance = dist[p] + 1
+
+        x_nhood  = x[p[0]-1:p[0]+2, p[1]-1:p[1]+2]
+        v_nhood  = v[p[0]-1:p[0]+2, p[1]-1:p[1]+2]
+        v_nhood[1,1] = 1
+
+        prvhood  = prev[p[0]-1:p[0]+2, p[1]-1:p[1]+2]
+        dsthood  = dist[p[0]-1:p[0]+2, p[1]-1:p[1]+2]
+        new_mask = (x_nhood & ~v_nhood)
+        prvhood[new_mask] = p  #TODO: should not get overwritten (?)
+        dsthood[new_mask] = (dist[p[0],p[1]] + 1) #TODO: should not get overwritten
+
+        new_pts  = new_mask.nonzero() + p -1  # -1 because of nhood offset
+        stack    = torch.cat([new_pts, stack])
+
+    path = torch.empty([0,2])
+    p = get_maximum_distance_points(endpoints)[1] #TODO: use dist.argmax()
+    while not torch.any(p == -1):
+        path = torch.cat([path, p[None]])
+        p = prev[p[0], p[1]]
+    #remove the padding and reverse the direction
+    path = torch.flip(path - 1, dims=[0])
+    return path

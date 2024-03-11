@@ -1,11 +1,12 @@
 import traininglib.segmentation.segmentationmodel as segm
-import traininglib.segmentation.skeletonization   as skel
 import traininglib.segmentation.connectedcomponents as concom
+from util import _export_to_onnx
 
 import io
 import onnxruntime as ort
 import torch
 import numpy as np
+
 
 
 def test_connected_components():
@@ -58,35 +59,4 @@ def test_adjacency_dfs():
 
 
 
-def test_skeletonization():
-    skeletonize = torch.jit.script(skel.skeletonize)
-    
-    x = torch.zeros([1,1,100,100])
-    x[..., 5:10,   5:90] = 1
-    x[..., 15:20, 20:70] = 1
 
-    x_sk = skeletonize(x)
-
-    assert torch.all(x_sk[0,0, :7,   :  ] == 0)
-    assert torch.all(x_sk[0,0, 7,   7:87] == 1)
-    assert torch.all(x_sk[0,0, 8:10, :  ] == 0)
-
-    session = _export_to_onnx(skeletonize)
-    session.run(None, {'x':x.numpy()})
-
-
-def _export_to_onnx(func, args=None, **kw):
-    buffer   = io.BytesIO()
-    torch.onnx.export(
-        torch.jit.script(func), 
-        args or (torch.zeros([1,1,64,64]),), 
-        buffer, 
-        input_names=['x'], 
-        dynamic_axes={'x':[2,3]},
-    )
-    onnx_bytes = buffer.getvalue()
-
-    sess_options = ort.SessionOptions()
-    sess_options.log_severity_level = 3
-    session = ort.InferenceSession(onnx_bytes, sess_options)
-    return session
