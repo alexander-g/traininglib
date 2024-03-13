@@ -124,7 +124,7 @@ def path_via_dfs(x:torch.Tensor) -> torch.Tensor:
 
     endpoints = find_endpoints(x)
     if len(endpoints) < 2:
-        return torch.empty([0,2])
+        return torch.empty([0,2], dtype=torch.int64)
     
     #TODO: error handling if len(endpoints) < 2
     dmat      = distance_matrix(endpoints)
@@ -140,28 +140,111 @@ def path_via_dfs(x:torch.Tensor) -> torch.Tensor:
 
     while len(stack) > 0:
         p, stack = stack[0], stack[1:]
+        py,px    = p[0], p[1]
         if v[p[0], p[1]] == 1:
-            continue
-        distance = dist[p] + 1
+            new_pts = torch.empty([0,2], dtype=stack.dtype)
+            # NOTE: no continue because onnx doesnt like it
+            #continue
+        else:
+            distance = dist[p] + 1
+            # 3x3 neighborhood
+            y0,y1 = py-1, py+2
+            x0,x1 = px-1, px+2
 
-        x_nhood  = x[p[0]-1:p[0]+2, p[1]-1:p[1]+2]
-        v_nhood  = v[p[0]-1:p[0]+2, p[1]-1:p[1]+2]
-        v_nhood[1,1] = 1
+            #mark point as visited
+            v[py,px] = True
 
-        prvhood  = prev[p[0]-1:p[0]+2, p[1]-1:p[1]+2]
-        dsthood  = dist[p[0]-1:p[0]+2, p[1]-1:p[1]+2]
-        new_mask = (x_nhood & ~v_nhood)
-        prvhood[new_mask] = p  #TODO: should not get overwritten (?)
-        dsthood[new_mask] = (dist[p[0],p[1]] + 1) #TODO: should not get overwritten
+            x_nhood  = x[y0:y1, x0:x1]
+            v_nhood  = v[y0:y1, x0:x1]
+            # NOTE: onnx error
+            #v_nhood[1,1] = 1 
+            # NOTE: doesnt do as intented in onnx, (not a view of v)
+            #v_nhood[torch.tensor(1), torch.tensor(1)] = True
 
-        new_pts  = new_mask.nonzero() + p -1  # -1 because of nhood offset
-        stack    = torch.cat([new_pts, stack])
+            #mask indicating the next coordinates to visit
+            new_mask = (x_nhood & ~v_nhood)
+            
+            # NOTE: this doesnt work on onnx for same reason as above
+            #prvhood  = prev[y0:y1, x0:x1]
+            #dsthood  = dist[y0:y1, x0:x1]
+            #prvhood[new_mask] = p
+            #dsthood[new_mask] = (dist[p[0],p[1]] + 1)
 
-    path = torch.empty([0,2])
-    p = get_maximum_distance_points(endpoints)[1] #TODO: use dist.argmax()
-    while not torch.any(p == -1):
-        path = torch.cat([path, p[None]])
-        p = prev[p[0], p[1]]
+            # the next coordinates to visit
+            new_pts_ = torch.nonzero(new_mask) + p -1  # -1 because of nhood offset
+            # NOTE: ugly loop but could not get it to work in onnx without
+            for c in new_pts_:
+                cy,cx = p[0], p[1]
+                #update predecessors
+                prev[c[0], c[1], 0] = cy
+                prev[c[0], c[1], 1] = cx
+                #update distances
+                dist[c[0], c[1]]    = dist[cy,cx] + 1
+            
+            # NOTE: looks like a noop but is required for onnx
+            # I believe otherwise it optimizes away the prev and dist updates above
+            new_pts = new_pts_
+        stack = torch.cat([new_pts, stack])
+
+    #trace the path from endpoint back to starting point
+    path = torch.empty([0,2], dtype=torch.int64)
+    q = get_maximum_distance_points(endpoints)[1] #TODO: use dist.argmax()
+    while not torch.any(q == -1):
+        path = torch.cat([path, q[None]])
+        q = prev[q[0], q[1]]
+        # why onnx, why is q.shape == (1,2) ??? squeezing to remove
+        q = torch.squeeze(q)
     #remove the padding and reverse the direction
     path = torch.flip(path - 1, dims=[0])
     return path
+
+
+@torch.jit.script_if_tracing
+def slice_mask(mask:torch.Tensor) -> tp.Tuple[torch.Tensor, torch.Tensor]:
+    '''Slice mask to remove empty background. 
+       Returns the slice and top-left coordinates'''
+    assert mask.dtype == torch.bool
+    assert mask.ndim == 2
+
+    coordinates     = torch.nonzero(mask)
+    if len(coordinates) == 0:
+        return (
+            torch.empty([0,0], dtype=mask.dtype), 
+            torch.zeros([2], dtype=torch.int64)
+        )
+    top_left, _     = coordinates.min(0)
+    bottom_right, _ = coordinates.max(0)
+    sliced_mask     = mask[
+        top_left[0]:bottom_right[0]+1, top_left[1]:bottom_right[1]+1
+    ]
+    return sliced_mask, top_left
+
+
+
+@torch.jit.script_if_tracing
+def paths_from_labeled_skeleton(
+    labeled_skeletonmap:    torch.Tensor,
+) -> torch.Tensor:
+    '''Convert all skeletons to paths. Returns a Nx3 tensor: (x,y,label) '''
+    assert labeled_skeletonmap.dtype == torch.int64
+
+    paths = torch.zeros([0,3], dtype=torch.int64)
+    unique_labels = torch.unique(labeled_skeletonmap)
+    #remove label zero
+    unique_labels = unique_labels[unique_labels != 0]
+    for l in unique_labels:
+        # NOTE: this `if` would create two sub-graphs 
+        # and onnx doesnt like torch.cat in nested graphs
+        # ..., so dont
+        #if l == 0:
+        #    continue
+
+        skeleton, top_left = slice_mask(labeled_skeletonmap == l)
+        path = path_via_dfs(skeleton)
+        # re-add offset to coordinates
+        path = path + top_left
+        labeled_path = torch.nn.functional.pad(path, [0,1], value=l)
+
+        paths = torch.cat([paths, labeled_path])
+    return paths
+

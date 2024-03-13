@@ -15,7 +15,7 @@ from .connectedcomponents import (
     connected_components_max_pool,
     connected_components_patchwise
 )
-from .skeletonization import skeletonize
+from .skeletonization import skeletonize, paths_from_labeled_skeleton
 
 
 class Class(tp.NamedTuple):
@@ -116,11 +116,19 @@ class SegmentationModel_ONNX(SegmentationModel):
         *a,
         connected_components:bool = False,
         skeletonize:bool          = False,
+        paths:bool                = False,
         **kw,
     ):
         super().__init__(*a, **kw)
+        assert self.patchify, NotImplemented
+
         self.connected_components = connected_components
         self.skeletonize = skeletonize
+        if paths:
+            assert skeletonize and connected_components, (
+                'Skeletonization and connected components required to trace paths'
+            )
+        self.paths = paths
     
     def forward(  # type: ignore[override]
         self, 
@@ -145,15 +153,39 @@ class SegmentationModel_ONNX(SegmentationModel):
         
         new_i       = i+1
         completed   = ( new_i >= grid.reshape(-1,4).size()[0] )
-        y_labels    = y
+
+        y_labels    = torch.empty([0,1,1,1], dtype=torch.int64)
         if self.connected_components:
             y_labels = finalize_connected_components(y, completed, self.inputsize)
-            
-        y_skeleton  = y
+        
+        y_skeleton = torch.empty([0,1,1,1], dtype=torch.bool)
         if self.skeletonize:
             y_skeleton = finalize_skeletonize( (y>0.5), completed )
-
-        return x_u8, y, y_labels, y_skeleton, completed, new_i
+        
+        y_paths = torch.empty([0,3], dtype=torch.int64)
+        if self.paths:
+            y_paths = finalize_paths( y_skeleton, y_labels, completed )
+        
+        outputs = tuple(
+            [x_u8, y]
+            + ([y_labels]   if self.connected_components else [])
+            + ([y_skeleton] if self.skeletonize else [])
+            + ([y_paths]    if self.paths else [])
+            + [completed, new_i]
+        )
+        #sanity check
+        assert len(self.output_names) == len(outputs)
+        return outputs
+    
+    @property
+    def output_names(self):
+        return (
+            ['x.output', 'y.output'] 
+            + (['labels']   if self.connected_components else [])
+            + (['skeleton'] if self.skeletonize else [])
+            + (['paths']    if self.paths else [])
+            + ['completed', 'i.output']
+        )
     
     def export_to_onnx(self, outputfile:str) -> bytes:
         from traininglib import onnxlib
@@ -166,7 +198,7 @@ class SegmentationModel_ONNX(SegmentationModel):
             model        = self, 
             inputs       = tuple(args.values()), 
             inputnames   = list(args.keys()), 
-            outputnames  = ['x.output', 'y.output', 'labels', 'completed', 'i.output'],
+            outputnames  = self.output_names,
             dynamic_axes = {'x':[1,2], 'y':[0,1,2,3]},
             export_params = True,
         )
@@ -183,18 +215,12 @@ class SegmentationModel_TorchScript(torch.nn.Module):
         self.module = module
     
     def forward(self, inputfeed:TensorDict) -> TensorDict:
-        x_u8, y, y_labels, completed, new_i = self.module(
+        outputs = self.module(
             inputfeed['x'],
             inputfeed['i'],
             inputfeed['y'],
         )
-        return {
-            'x':         x_u8,
-            'y':         y,
-            'labels':    y_labels,
-            'completed': completed,
-            'i':         new_i,
-        }
+        return dict(zip(self.module.output_names, outputs))
     
     def export_to_torchscript(self, outputfile:str) -> None:
         from traininglib import torchscriptlib
@@ -324,8 +350,8 @@ def finalize_connected_components(
 
 @torch.jit.script_if_tracing
 def finalize_skeletonize(
-    binarymap:torch.Tensor, 
-    completed:torch.Tensor
+    binarymap: torch.Tensor, 
+    completed: torch.Tensor
 ) -> torch.Tensor:
     assert completed.dtype == torch.bool and completed.ndim == 0
     assert binarymap.dtype == torch.bool
@@ -333,6 +359,27 @@ def finalize_skeletonize(
     if completed:
         skeleton = skeletonize(binarymap)
     return skeleton
+
+
+@torch.jit.script_if_tracing
+def finalize_paths(
+    skeletonmap: torch.Tensor,
+    labelmap:    torch.Tensor,
+    completed:   torch.Tensor,
+) -> torch.Tensor:
+    assert completed.dtype == torch.bool and completed.ndim == 0
+    assert skeletonmap.dtype == torch.bool
+    assert labelmap.dtype    == torch.int64
+    assert skeletonmap.shape == labelmap.shape
+    assert skeletonmap.ndim  == 4
+    assert skeletonmap.shape[:2] == (1,1)
+
+    paths = torch.empty([0,3], dtype=torch.int64)
+    if completed:
+        labeled_skeleton = skeletonmap * labelmap
+        paths = paths_from_labeled_skeleton(labeled_skeleton[0,0])
+    return paths
+
 
 
 def classmap_to_rgb(classmap:np.ndarray, colors:tp.List[Color]) -> np.ndarray:

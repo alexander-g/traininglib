@@ -3,6 +3,9 @@ import traininglib.segmentation.connectedcomponents as concom
 from util import _export_to_onnx
 
 import io
+import os
+import tempfile
+
 import onnxruntime as ort
 import torch
 import numpy as np
@@ -58,5 +61,25 @@ def test_adjacency_dfs():
     assert len(torch.unique(labeled)) == 3
 
 
+def test_segmentationmodel_export():
+    conv = torch.nn.Conv2d(3,1, kernel_size=3)
+    m = segm.SegmentationModel_ONNX(
+        inputsize=512, 
+        classes=[], 
+        module=conv, 
+        patchify=True,
+        connected_components=True,
+        skeletonize=True,
+        #paths=True,
+    )
+    x = torch.ones([1,1024,1024,3]).byte()
+    i = torch.tensor(0)
+    y = torch.ones([1,1,1,1])
+    outputs = m(x,i,y)
+    assert len(outputs) == len(m.output_names)
+
+    tempdir = tempfile.TemporaryDirectory()
+    tempf   = os.path.join(tempdir.name, 'exported')
+    m.export_to_onnx(tempf)
 
 

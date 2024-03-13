@@ -3,14 +3,14 @@ import torch
 import onnxruntime as ort
 
 
-def _export_to_onnx(func, args=None, **kw):
+def _export_to_onnx(func, args=None, dyn_ax=None, **kw):
     buffer   = io.BytesIO()
     torch.onnx.export(
         torch.jit.script(func), 
         args or (torch.zeros([1,1,64,64]),), 
         buffer, 
         input_names=['x'], 
-        dynamic_axes={'x':[2,3]},
+        dynamic_axes=dyn_ax or {'x':[2,3]},
     )
     onnx_bytes = buffer.getvalue()
 
