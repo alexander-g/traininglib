@@ -154,9 +154,11 @@ class SegmentationModel_ONNX(SegmentationModel):
         new_i       = i+1
         completed   = ( new_i >= grid.reshape(-1,4).size()[0] )
 
-        y_labels    = torch.empty([0,1,1,1], dtype=torch.int64)
+        y_labels     = torch.empty([0,1,1,1], dtype=torch.int64)
+        y_labels_rgb = torch.empty([1,1,3], dtype=torch.uint8)
         if self.connected_components:
             y_labels = finalize_connected_components(y, completed, self.inputsize)
+            y_labels_rgb = instancemap_to_rgb(y_labels[0,0])
         
         y_skeleton = torch.empty([0,1,1,1], dtype=torch.bool)
         if self.skeletonize:
@@ -168,7 +170,7 @@ class SegmentationModel_ONNX(SegmentationModel):
         
         outputs = tuple(
             [x_u8, y]
-            + ([y_labels]   if self.connected_components else [])
+            + ([y_labels, y_labels_rgb]   if self.connected_components else [])
             + ([y_skeleton] if self.skeletonize else [])
             + ([y_paths]    if self.paths else [])
             + [completed, new_i]
@@ -181,7 +183,7 @@ class SegmentationModel_ONNX(SegmentationModel):
     def output_names(self):
         return (
             ['x.output', 'y.output'] 
-            + (['labels']   if self.connected_components else [])
+            + (['labels', 'labels_rgb'] if self.connected_components else [])
             + (['skeleton'] if self.skeletonize else [])
             + (['paths']    if self.paths else [])
             + ['completed', 'i.output']
@@ -349,6 +351,22 @@ def finalize_connected_components(
     return y_labels
 
 @torch.jit.script_if_tracing
+def _finalize_connected_components(
+    y:         torch.Tensor, 
+    completed: torch.Tensor,
+    patchsize: int,
+) -> tp.Tuple[torch.Tensor, torch.Tensor]:
+    assert completed.dtype == torch.bool and completed.ndim == 0
+    y_labels     = torch.zeros([1,1,1,1], dtype=torch.int64)
+    y_labels_rgb = torch.zeros([0,0,3], dtype=torch.uint8)
+    if completed:
+        y_binary = (y > 0.5)
+        #y_labels = connected_components_max_pool( y_binary )
+        y_labels = connected_components_patchwise( y_binary, patchsize )
+        y_labels_rgb = instancemap_to_rgb(y_labels[0,0])
+    return y_labels, y_labels_rgb
+
+@torch.jit.script_if_tracing
 def finalize_skeletonize(
     binarymap: torch.Tensor, 
     completed: torch.Tensor
@@ -389,5 +407,53 @@ def classmap_to_rgb(classmap:np.ndarray, colors:tp.List[Color]) -> np.ndarray:
     for i,c in enumerate(colors, 1):
         rgb[classmap == i] = c
     return rgb
+
+
+def _pseudorandom_hue(i:torch.Tensor) -> torch.Tensor:
+    '''Map an integer to range 0..360 with a minimum distance 
+       inbetween consecutive integers.'''
+    assert i.dtype == torch.int64
+    return i * 360//4 % 355
+
+def _pseudorandom_saturation(i:torch.Tensor) -> torch.Tensor:
+    '''Map an integer to range 0.4..0.7 with a minimum distance 
+       inbetween consecutive integers.'''
+    assert i.dtype == torch.int64
+    return i * 0.3/5 % 0.28 + 0.4
+
+def hsv_to_rgb(h:torch.Tensor, s:torch.Tensor, v:torch.Tensor) -> torch.Tensor:
+    '''HSV to RGB alternative conversion formula from wikipedia'''
+    assert h.dtype == torch.int64   # range 0..360
+    assert s.dtype == torch.float32 # range 0..1
+    assert v.dtype == torch.float32 # range 0..1
+    k_r = (5 + h/60) % 6
+    k_g = (3 + h/60) % 6
+    k_b = (1 + h/60) % 6
+
+    r = v - v*s*torch.min(k_r, 4-k_r).clip(0,1)
+    g = v - v*s*torch.min(k_g, 4-k_g).clip(0,1)
+    b = v - v*s*torch.min(k_b, 4-k_b).clip(0,1)
+    return torch.stack([r,g,b])
+
+@torch.jit.script_if_tracing
+def instancemap_to_rgb(instancemap:torch.Tensor) -> torch.Tensor:
+    '''Colorize a map containing unique integer labels for instances
+       #TODO: slow in onnx '''
+    assert instancemap.dtype == torch.int64
+    assert instancemap.ndim == 2
+
+    rgbmap = torch.zeros( instancemap.shape + (3,), dtype=torch.float32 )
+    #zero is implicitly black
+    labels = torch.unique(instancemap)
+    labels = labels[labels!=0]
+    for i,l in enumerate(labels):
+        mask = (instancemap == l)
+        hue  = _pseudorandom_hue(torch.tensor(i))
+        sat  = _pseudorandom_saturation(torch.tensor(i))
+        rgb  = hsv_to_rgb(hue, sat, torch.tensor(1.0))
+        # NOTE: onnx error
+        #rgbmap[mask] = (rgb*255).to(torch.uint8)
+        rgbmap[mask] += rgb
+    return (rgbmap*255).to(torch.uint8)
 
 
