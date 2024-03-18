@@ -47,14 +47,9 @@ def connected_components_max_pool(x:torch.Tensor, start:int = 0) -> torch.Tensor
 
     i = 0
     while 1:
-        if i%2 == 0:
-            update = torch.nn.functional.max_pool2d(
-                labeled, kernel_size=3, stride=1, padding=1
-            )
-        else:
-            # faster because of stride=3 but cannot use it exclusively 
-            # because it will not converge
-            update = maxpool_3x3_strided(labeled, stride=3)
+        update = torch.nn.functional.max_pool2d(
+            labeled, kernel_size=3, stride=1, padding=1
+        )
         
         update = update * x
         change = (update != labeled)

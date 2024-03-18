@@ -48,6 +48,22 @@ def test_connected_components_patchwise():
     assert np.all(b_onnx == b.numpy())
 
 
+def test_connected_components_actual_bug1():
+    a = torch.zeros([1,1,512,512])
+    aview = a[..., 373:,293:][...,:10,:10]
+    aview[..., :3, 3:8] = 1
+    aview[..., 4:8, 3]  = 1
+    aview[..., 4,   4]  = 1
+    #print(aview.long(), a.sum())
+
+    out = segm.finalize_connected_components(a, completed=torch.tensor(True), patchsize=512)
+    #print(out[0,0, 373:,293:][:10,:10])
+
+    assert len( torch.unique(out) ) == 3
+
+
+
+
 def test_adjacency_dfs():
     adj = torch.as_tensor([
         [1,2], #1
