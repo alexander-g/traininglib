@@ -157,7 +157,16 @@ def connected_components_patchwise(x:torch.Tensor, patchsize:int) -> torch.Tenso
 
     adjacency_labels = connected_components_from_adjacency_list(adjacency_list)
     return _relabel(y, adjacency_list, adjacency_labels)
-        
 
 
+@torch.jit.script_if_tracing
+def filter_components(x:torch.Tensor, pixel_threshold:int) -> torch.Tensor:
+    assert x.dtype == torch.int64
+
+    x = x.clone()
+    labels, counts = torch.unique(x, return_counts=True)
+    mask = (counts < pixel_threshold)
+    for l in labels[mask]:
+        x *= (x != l).to(x.dtype)
+    return x
 

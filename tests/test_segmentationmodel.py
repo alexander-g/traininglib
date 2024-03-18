@@ -77,6 +77,21 @@ def test_adjacency_dfs():
     assert len(torch.unique(labeled)) == 3
 
 
+def test_filter_components():
+    x = torch.tensor([
+        [0,0,1,1,0,0,0,0,0,0],
+        [0,0,0,1,0,0,0,2,2,0],
+        [0,0,0,1,0,0,0,2,2,2],
+        [0,0,0,0,0,0,0,0,2,2],
+        [0,0,0,3,3,0,0,0,2,0],
+        [0,0,0,0,0,0,0,0,0,0],
+    ]).long()
+    y = concom.filter_components(x, pixel_threshold=5).numpy()
+    assert np.unique(y).tolist() == [0,2]
+    assert np.all( (y==2) == (x==2).numpy() )
+
+
+
 def test_segmentationmodel_export():
     conv = torch.nn.Conv2d(3,1, kernel_size=3)
     m = segm.SegmentationModel_ONNX(

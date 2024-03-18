@@ -13,7 +13,8 @@ from ..modellib import BaseModel, load_weights
 from .segmentationtraining import SegmentationTask
 from .connectedcomponents import (
     connected_components_max_pool,
-    connected_components_patchwise
+    connected_components_patchwise,
+    filter_components,
 )
 from .skeletonization import skeletonize, paths_from_labeled_skeleton
 
@@ -117,6 +118,9 @@ class SegmentationModel_ONNX(SegmentationModel):
         connected_components:bool = False,
         skeletonize:bool          = False,
         paths:bool                = False,
+        #filter out components smaller than this
+        #TODO: this might depend too much on the image resolution / dataset
+        min_component_size:int    = 0,
         **kw,
     ):
         super().__init__(*a, **kw)
@@ -129,6 +133,11 @@ class SegmentationModel_ONNX(SegmentationModel):
                 'Skeletonization and connected components required to trace paths'
             )
         self.paths = paths
+        if min_component_size > 0:
+            assert connected_components, (
+                'connected_components=True required to filter out components'
+            )
+        self.min_component_size = min_component_size
     
     def forward(  # type: ignore[override]
         self, 
@@ -151,6 +160,7 @@ class SegmentationModel_ONNX(SegmentationModel):
             y           = maybe_new_y(x_chw, i, y)
             y           = paste_patch(y, y_patch, grid, i, self.slack)
         
+        y           = (y > 0.5).to(y.dtype)
         new_i       = i+1
         completed   = ( new_i >= grid.reshape(-1,4).size()[0] )
 
@@ -158,6 +168,7 @@ class SegmentationModel_ONNX(SegmentationModel):
         y_labels_rgb = torch.empty([1,1,3], dtype=torch.uint8)
         if self.connected_components:
             y_labels = finalize_connected_components(y, completed, self.inputsize)
+            y_labels = filter_components(y_labels, self.min_component_size)
             y_labels_rgb = instancemap_to_rgb(y_labels[0,0])
         
         y_skeleton = torch.empty([0,1,1,1], dtype=torch.bool)
@@ -350,21 +361,6 @@ def finalize_connected_components(
         y_labels = connected_components_patchwise( y_binary, patchsize )
     return y_labels
 
-@torch.jit.script_if_tracing
-def _finalize_connected_components(
-    y:         torch.Tensor, 
-    completed: torch.Tensor,
-    patchsize: int,
-) -> tp.Tuple[torch.Tensor, torch.Tensor]:
-    assert completed.dtype == torch.bool and completed.ndim == 0
-    y_labels     = torch.zeros([1,1,1,1], dtype=torch.int64)
-    y_labels_rgb = torch.zeros([0,0,3], dtype=torch.uint8)
-    if completed:
-        y_binary = (y > 0.5)
-        #y_labels = connected_components_max_pool( y_binary )
-        y_labels = connected_components_patchwise( y_binary, patchsize )
-        y_labels_rgb = instancemap_to_rgb(y_labels[0,0])
-    return y_labels, y_labels_rgb
 
 @torch.jit.script_if_tracing
 def finalize_skeletonize(
