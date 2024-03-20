@@ -8,9 +8,29 @@ on:
         required: true
         type: choice
         options:
-          - ubuntu-latest
           - windows-latest
+          - ubuntu-latest
           #- macos-latest
+      tests:
+        required: false
+        type:     boolean
+        default:  true
+  workflow_call:
+    #need to repeat the inputs (https://github.com/orgs/community/discussions/39357)
+    inputs:
+      os:
+        description: 'Operating System'
+        required: true
+        type: string
+        #type: choice    #not supported
+        #options:
+        #  - windows-latest
+        #  - ubuntu-latest
+        #  - macos-latest
+      tests:
+        required: false
+        type:     boolean
+        default:  true
 
 
 jobs:
@@ -21,13 +41,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          repository: alexander-g/traininglib
           submodules: 'recursive'
-      
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-          cache: 'pip' # caching pip dependencies
-          cache-dependency-path: '**/requirements.frozen.txt'
       
       - name: Setup cmake
         uses: jwlawson/actions-setup-cmake@v1.14
@@ -47,6 +62,17 @@ jobs:
             cpp/build/**/TSinterface.dll
             cpp/build/*.so
           retention-days: 1
+      
+  test:
+    if:      ${{ inputs.tests }}
+    runs-on: ${{ inputs.os }}
+    needs:   build
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip' # caching pip dependencies
+          cache-dependency-path: '**/requirements.frozen.txt'
 
       - name: Install requirements
         run: pip install -r requirements.frozen.txt

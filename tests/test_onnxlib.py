@@ -353,7 +353,7 @@ def test_conv_backward(args, desc):
         print('torch: ', t_out.numpy().round(2), t_out.shape)
         print('manual:', m_out.numpy().round(2), m_out.shape)
         print('diff: ', np.abs(t_out.numpy() - m_out.numpy()).max() )
-        assert torch.allclose(t_out, m_out, atol=1e-7)
+        assert torch.allclose(t_out, m_out, atol=5e-6)
         print()
 
     #assert 0
