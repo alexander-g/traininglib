@@ -49,3 +49,6 @@ target_include_directories(TSinterface PRIVATE ${MINIZ_DIR})
 target_include_directories(TSinterface PRIVATE ${CMAKE_BINARY_DIR}/_deps/json-src/single_include/)
 target_include_directories(TSinterface PRIVATE ${CMAKE_BINARY_DIR}/_deps/pytorch-src/include/)
 target_link_libraries(TSinterface PRIVATE "${TORCH_LIBRARIES}")
+set_target_properties(TSinterface PROPERTIES
+        BUILD_WITH_INSTALL_RPATH FALSE
+        LINK_FLAGS "-Wl,-rpath,$ORIGIN/")
