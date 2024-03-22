@@ -38,3 +38,14 @@ target_link_libraries(TSinterface PRIVATE "${TORCH_LIBRARIES}")
 set_target_properties(TSinterface PROPERTIES
         BUILD_WITH_INSTALL_RPATH FALSE
         LINK_FLAGS "-Wl,-rpath,$ORIGIN/")
+
+# no optimization
+target_compile_options(TSinterface PRIVATE
+    "$<$<CXX_COMPILER_ID:GNU>:-O0>"
+    "$<$<CXX_COMPILER_ID:MSVC>:/Od>"
+)
+# strip debug symbols
+target_compile_options(TSinterface PRIVATE
+    "$<$<CXX_COMPILER_ID:GNU>:-s>"
+    "$<$<CXX_COMPILER_ID:MSVC>:/DEBUG:NONE>"
+)
