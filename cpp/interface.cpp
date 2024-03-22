@@ -4,7 +4,6 @@
 #include <stdexcept>
 #include <vector>
 
-#include "miniz.hpp"
 #include <nlohmann/json.hpp>
 using json = nlohmann::json;
 
@@ -14,40 +13,6 @@ using json = nlohmann::json;
 typedef torch::Dict<std::string, torch::Tensor> TensorDict;
 
 
-std::vector<char> read_binary_file(const std::string& filename) {
-    std::ifstream file(filename, std::ios::binary | std::ios::ate);
-    if (!file.is_open())
-        throw std::runtime_error("Error opening file: " + filename);
-
-    std::streamsize size = file.tellg();
-    file.seekg(0, std::ios::beg);
-
-    std::vector<char> buffer(size);
-    if (file.read(buffer.data(), size)) {
-        return buffer;
-    }
-    else throw std::runtime_error("Error reading file: " + filename);
-}
-
-bool endsWith(const std::string& str, const std::string& suffix) {
-    return (
-        str.size() >= suffix.size() 
-        && str.compare(str.size() - suffix.size(), suffix.size(), suffix) == 0
-    );
-}
-
-json read_inference_schema_from_archive(const ZipArchive& archive){
-    const std::vector<std::string> paths = archive.get_file_paths();
-    for (const auto& path : paths) {
-        if (endsWith(path, "/inference.schema.json")){
-            const std::vector<uint8_t> data = archive.read_file(path);
-            const json parsed = json::parse(data);
-            return parsed;
-        }
-    }
-    //else
-    throw std::runtime_error("Could not find inference schema in archive.");
-}
 
 at::ScalarType string_to_dtype(const std::string& dtypestring) {
     if (dtypestring == "float32")
@@ -87,33 +52,6 @@ int64_t shape_to_size(const std::vector<int64_t> shape) {
     return size;
 }
 
-torch::Tensor
-read_tensor_from_archive(const ZipArchive& archive, const json& schemaitem) {
-    const auto path  = schemaitem.find("path");
-    const auto dtype = schemaitem.find("dtype");
-    const auto shape = schemaitem.find("shape");
-    const auto end   = schemaitem.end();
-    if(path == end || dtype == end || shape == end)
-        throw std::runtime_error("Invalid schema item");
-    
-    std::vector<uint8_t> data = archive.read_file(*path);
-    const std::vector<int64_t> shapevec = shape->get<std::vector<int64_t>>();
-    //TODO: need to multiply with element size
-    // if( shape_to_size(shapevec) != data.size() )
-    //     throw std::runtime_error("Schema shape does not correspond to data");
-    
-    return torch::from_blob(data.data(), shapevec, string_to_dtype(*dtype)).clone();
-}
-
-TensorDict read_inputfeed_from_archive(const ZipArchive& archive) {
-    const json schema = read_inference_schema_from_archive(archive);
-    TensorDict inputfeed;
-    for (auto item = schema.begin(); item != schema.end(); ++item) {
-        const torch::Tensor t = read_tensor_from_archive(archive, item.value());
-        inputfeed.insert(item.key(), t);
-    }
-    return inputfeed;
-}
 
 torch::Tensor create_tensorview_from_schema_item(const json& schemaitem) {
     const auto addr  = schemaitem.find("address");
@@ -138,34 +76,6 @@ TensorDict read_tensordict_from_json(const std::vector<uint8_t>& jsonbuffer) {
     return inputfeed;
 }
 
-std::vector<uint8_t> write_tensordict_to_archive(const TensorDict& data) {
-    json schema({});
-    ZipArchive archive;
-    int i = 0;
-    for(const auto& item: data){
-        const torch::Tensor& t = item.value();
-        const auto& key        = item.key();
-
-        std::ostringstream oss;
-        oss << "./data/" << i << ".storage";
-        const std::string path = oss.str();
-
-        archive.write_file(path, t.data_ptr(), t.nbytes());
-
-        json schema_item;
-        schema_item["path"]  = path;
-        schema_item["dtype"] = dtype_to_string(t.dtype());
-        schema_item["shape"] = t.sizes();
-        schema[item.key()]   = schema_item;
-
-        i++;
-    }
-    const std::string schema_str = schema.dump();
-    archive.write_file(
-        "./onnx/inference.schema.json", schema_str.c_str(), schema_str.size()
-    );
-    return archive.to_bytes();
-}
 
 TensorDict to_tensordict(const torch::jit::IValue& x) {
     if(!x.isGenericDict())
@@ -309,17 +219,5 @@ extern "C" {
 }
 
 
-int main() {
-    const std::vector<char> buffer = read_binary_file("DELETE.zip");
-    ZipArchive archive(buffer);
-
-    std::cout << archive.get_number_of_files() << std::endl;
-    const std::vector<std::string> file_paths = archive.get_file_paths();
-    for (const auto& path : file_paths) {
-        std::cout << path << std::endl;
-    }
-
-    std::cout<<"ok"<<std::endl;
-}
 
 
