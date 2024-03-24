@@ -13,12 +13,17 @@ FetchContent_Declare(json
 )
 FetchContent_MakeAvailable(json)
 
-
-if (UNIX)
+if (WIN32)
+    set(PYTORCH_URL https://download.pytorch.org/libtorch/cpu/libtorch-win-shared-with-deps-2.1.2%2Bcpu.zip)
+elseif (APPLE)
+    if (CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64")
+        set(PYTORCH_URL https://download.pytorch.org/libtorch/cpu/libtorch-macos-x86_64-2.2.1.zip)
+    elseif (CMAKE_SYSTEM_PROCESSOR MATCHES "arm64")
+        set(PYTORCH_URL https://download.pytorch.org/libtorch/cpu/libtorch-macos-arm64-2.2.1.zip)
+    endif()
+elseif (UNIX)
     #NOTE: pre-cxx11 abi required
     set(PYTORCH_URL https://download.pytorch.org/libtorch/cpu/libtorch-shared-with-deps-2.1.2%2Bcpu.zip)
-elseif (WIN32)
-    set(PYTORCH_URL https://download.pytorch.org/libtorch/cpu/libtorch-win-shared-with-deps-2.1.2%2Bcpu.zip)
 endif()
 
 message("Maybe downloading ${PYTORCH_URL}")
