@@ -134,7 +134,9 @@ class SegmentationDataset:
     ):
         '''Slice data into patches and cache them into a folder.'''
 
-        hash = hashlib.sha256( pickle.dumps([self, filepairs]) ).hexdigest()
+        hash = hashlib.sha256( 
+            pickle.dumps([self.__dict__, filepairs])
+        ).hexdigest()
         cachedir = os.path.join(cachedir, hash)
         if os.path.exists(cachedir) and not force:
             print('Re-using already cached folder', cachedir)
