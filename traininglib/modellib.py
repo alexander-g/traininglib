@@ -95,6 +95,7 @@ class BaseModel(torch.nn.Module):
                 "torchvision.ops.**",
                 "torchvision.datasets.**",
                 "torchvision.io.**",
+                "torchvision._meta_registrations",
             ]
             pe.intern("torchvision.**", exclude=externs)
             pe.extern(externs)
