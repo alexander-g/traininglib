@@ -81,3 +81,15 @@ def test_random_crop():
     assert t1_uniques.shape == (2,)
     assert 0 in t1_uniques
     assert 7.77 in t1_uniques
+
+
+def test_pad_to_minimum_size():
+    x  = torch.ones(np.random.randint(4,50, size=[4]).tolist())
+    x2 = datalib.pad_to_minimum_size(x, 65)
+    assert x.shape[:2] == x2.shape[:2]
+    assert x2.shape[-2] == 65
+    assert x2.shape[-1] == 65
+
+    #dont pad if already large enough
+    x3 = datalib.pad_to_minimum_size(x2, 10)
+    assert x3.shape == x2.shape

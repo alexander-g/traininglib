@@ -89,6 +89,7 @@ class SegmentationTask(TrainingTask):
     ) -> tp.Tuple[tp.Iterable, tp.Iterable|None]:
         patchsize_train = patchsize_val = None
         if self.patchify:
+            # NOTE: *2 for cropping during augmentation
             patchsize_train = self.inputsize * 2
             patchsize_val   = self.inputsize
         
@@ -105,13 +106,17 @@ class SegmentationTask(TrainingTask):
 
 
 class SegmentationDataset:
-    def __init__(self, filepairs:tp.List[tp.Tuple[str,str]], patchsize:int|None):
+    def __init__(self, 
+        filepairs: tp.List[tp.Tuple[str,str]], 
+        patchsize: int|None, 
+        cachedir:  str = './cache/',
+    ):
         '''Dataset for image pairs. If `patchsize` is given, 
            will extract and cache patches instead of loading full images'''
         self.filepairs = filepairs
         if patchsize is not None:
             self.patchsize = patchsize
-            self.filepairs = self._cache(filepairs)
+            self.filepairs = self._cache(filepairs, cachedir)
     
     def __len__(self) -> int:
         return len(self.filepairs)
@@ -153,8 +158,12 @@ class SegmentationDataset:
         for inputfile, annotationfile in filepairs:
             in_data = datalib.load_image(inputfile, to_tensor=True)
             in_data = tp.cast(torch.Tensor, in_data)
+            in_data = datalib.pad_to_minimum_size(in_data, self.patchsize)
+
             an_data = datalib.load_image(annotationfile, to_tensor=True)
             an_data = tp.cast(torch.Tensor, an_data)
+            an_data = datalib.pad_to_minimum_size(an_data, self.patchsize)
+            
             in_patches = datalib.slice_into_patches_with_overlap(in_data, self.patchsize, slack)
             an_patches = datalib.slice_into_patches_with_overlap(an_data, self.patchsize, slack)
             for i, (in_patch, an_patch) in enumerate(zip(in_patches, an_patches)):

@@ -142,6 +142,15 @@ def write_image_tensor(filepath:str, x:torch.Tensor, makedirs:bool=True) -> None
     return write_image(filepath, x_np, makedirs)
 
 
+def pad_to_minimum_size(x:torch.Tensor, minsize:int) -> torch.Tensor:
+    '''If necessary pad the input on the last two dimensions to at least `minsize`'''
+    assert x.ndim >= 2, x.shape
+    H,W = x.shape[-2:]
+    paddings = (0, max(0, minsize-W), 0, max(0, minsize-H))
+    return torch.nn.functional.pad(x, paddings)
+
+
+
 Color = tp.Tuple[int,int,int]
 
 def convert_rgb_to_mask(
