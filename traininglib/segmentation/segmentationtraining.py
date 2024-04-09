@@ -21,6 +21,8 @@ class SegmentationTask(TrainingTask):
         ignore_colors:  tp.List[Color]|None         = None,
         cropfactors:    tp.Tuple[float, float]|None = (0.75, 1.33),
         pos_weight:     float = 1.0,
+        margin_weight:  float = 0.0,
+        rotate:         bool  = True,
         **kw
     ):
         assert len(colors) == 1, NotImplementedError('TODO: implement multiclass training')
@@ -31,6 +33,8 @@ class SegmentationTask(TrainingTask):
         self.colors        = colors
         self.ignore_colors = ignore_colors
         self.pos_weight    = torch.as_tensor(pos_weight, dtype=torch.float32)
+        self.margin_weight = margin_weight
+        self.rotate        = rotate
     
 
     def forward_step(self, batch:SegmentationBatch, augment:bool) -> tp.Tuple[Loss, Metrics]:
@@ -53,7 +57,17 @@ class SegmentationTask(TrainingTask):
         loss = torch.nn.functional.binary_cross_entropy_with_logits(
             y, t, weight, pos_weight=self.pos_weight.to(y.device)
         )
-        logs = {'loss': float(loss)}
+        logs = {'bce': float(loss)}
+        if self.margin_weight > 0:
+            margin_loss = margin_loss_fn(y, (t==1)) * self.margin_weight
+            loss = loss + margin_loss
+            logs['margin'] = float(margin_loss)
+        
+        #TODO: per class
+        # accuracy_map = ( t == (y > 0.5) ).float()
+        # accuracies   = accuracy_map.reshape(len(y), -1).mean(-1)
+        # logs['acc']  = float(accuracies.mean())
+
         return loss, logs
 
     def training_step(self, batch:SegmentationBatch) -> tp.Tuple[Loss, Metrics]:
@@ -77,7 +91,7 @@ class SegmentationTask(TrainingTask):
                     modes       = ['bilinear', 'nearest'], 
                     cropfactors = self.cropfactors
                 )
-            xi,ti = random_rotate_flip(xi, ti)
+            xi,ti = random_rotate_flip(xi, ti, rotate=self.rotate)
             new_x.append(xi)
             new_t.append(ti)
         x = torch.stack(new_x)
@@ -101,6 +115,24 @@ class SegmentationTask(TrainingTask):
             ld_val = datalib.create_dataloader(ds_val, shuffle=False, **ld_kw)
         return ld_train, ld_val
 
+
+def margin_loss_fn(y:torch.Tensor, t:torch.Tensor) -> torch.Tensor:
+    '''Loss pushing positive and negative samples apart'''
+    assert t.ndim == 4 and y.ndim == 4
+    assert y.shape[1] == 1, 'Multiclass outputs not supported'
+    assert t.shape == y.shape
+    assert t.dtype == torch.bool
+
+    y     = y.sigmoid()
+    y_pos = y[t]
+    y_neg = y[~t]
+    n     = min(len(y_pos), len(y_neg))
+    y_pos = y_pos[torch.randperm(len(y_pos))[:n]]
+    y_neg = y_neg[torch.randperm(len(y_neg))[:n]]
+
+    return torch.nn.functional.margin_ranking_loss(
+        y_pos, y_neg, torch.ones_like(y_pos), margin=1.0
+    )
 
 
 

@@ -112,13 +112,18 @@ def random_crop(
     return output
 
 
-def random_rotate_flip(*x:torch.Tensor) -> tp.List[torch.Tensor]:
+def random_rotate_flip(
+    *x:torch.Tensor, 
+    flip:bool   = True, 
+    rotate:bool = True,
+) -> tp.List[torch.Tensor]:
     '''Perform random rotation and flip operations on multiple (BCHW) tensors'''
     output = list(x)
-    k = np.random.randint(4)
-    for i in range(len(output)):
-        output[i] = torch.rot90(output[i], k, dims=(-2,-1))
-    if np.random.random() < 0.5:
+    if rotate:
+        k = np.random.randint(4)
+        for i in range(len(output)):
+            output[i] = torch.rot90(output[i], k, dims=(-2,-1))
+    if flip and np.random.random() < 0.5:
         for i in range(len(output)):
             output[i] = torch.flip(output[i], dims=(-1,))
     return output
