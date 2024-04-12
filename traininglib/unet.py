@@ -4,6 +4,7 @@ import numpy as np
 import torch, torchvision
 from torchvision.models._utils import IntermediateLayerGetter
 
+from .datalib import resize_tensor
 
 class UNet(torch.nn.Module):
     '''Backboned U-Net'''
@@ -20,7 +21,7 @@ class UNet(torch.nn.Module):
                 torch.nn.ReLU(),
             )
         def forward(self, x:torch.Tensor, skip_x:torch.Tensor, relu=True) -> torch.Tensor:
-            x = torch.nn.functional.interpolate(x, skip_x.shape[2:])   #TODO? mode='bilinear
+            x = resize_tensor(x, skip_x.shape[-2:], mode='nearest')   #TODO? mode='bilinear
             x = torch.cat([x, skip_x], dim=1)
             x = self.conv1x1(x)
             x = self.convblock(x)

@@ -50,7 +50,8 @@ class BaseModel(torch.nn.Module):
     def preprocess(self, x: torch.Tensor) -> torch.Tensor:
         """Input preprocessing function. For both training as well as inference."""
         assert len(x.shape) == 4, 'Input to preprocess() should be batched'
-        x = datalib.resize_tensor(x, self.inputsize, "bilinear")
+        if x.shape[2] != self.inputsize or x.shape[3] != self.inputsize:
+            x = datalib.resize_tensor(x, self.inputsize, "bilinear")
         x = x.to(self.device).to(self.dtype)
         return x
 
@@ -62,12 +63,18 @@ class BaseModel(torch.nn.Module):
     @property
     def device(self) -> torch.device:
         """Convenience property to get the device of the task/model"""
-        return next(self.parameters()).device
+        try:
+            return next(self.parameters()).device
+        except StopIteration:
+            return torch.device('cpu')
 
     @property
     def dtype(self) -> torch.dtype:
         """Convenience property to get the dtype of the model (float32/float16)"""
-        return next(self.parameters()).dtype
+        try:
+            return next(self.parameters()).dtype
+        except StopIteration:
+            return torch.float32
     
     def save(self, destination: str) -> str:
         """Save a model as a self-contained torch.package including source code."""
@@ -142,7 +149,7 @@ def start_training_from_cli_args(
 ) -> bool:
     '''`BaseModel.start_training()` with basic config provided by
        command line arguments from `args.base_training_argparser()`'''
-    model, paths = util.prepare_for_training(model, args)
+    model, paths = util.prepare_for_training(model, args) # type: ignore
     fit_kw  = {
         'epochs':          args.epochs,
         'lr':              args.lr,
@@ -156,7 +163,7 @@ def start_training_from_cli_args(
         task_kw    = task_kw,
         fit_kw     = fit_kw,
     )
-    model = model.save(paths.modelpath)
+    model.save(paths.modelpath)
     os.remove(paths.modelpath_tmp)
     return True
 

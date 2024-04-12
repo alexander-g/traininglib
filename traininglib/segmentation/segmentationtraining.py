@@ -40,7 +40,7 @@ class SegmentationTask(TrainingTask):
 
     def forward_step(self, batch:SegmentationBatch, augment:bool) -> tp.Tuple[Loss, Metrics]:
         '''Code re-use for training and validation'''
-        batch = datalib.to_device(*batch, device=self.device)
+        batch = datalib.to_device(*batch, device=self.device) # type: ignore [assignment]
         x,t = batch
         assert len(t.shape) == 4 and t.shape[1] == 3, 'Expecting batched RGB targets'
         assert len(x.shape) == 4 and x.shape[1] == 3, 'Expecting batched RGB inputs'

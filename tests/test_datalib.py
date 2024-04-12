@@ -40,7 +40,8 @@ def test_load_file_pairs():
     )
     output = datalib.load_file_pairs(filepath)
     assert len(output) == 3
-    assert output[1][1] == f'{tmpdir.name}/{subfolder}/mask1.png'
+    #NOTE: awkward use of join and / because of linux/windows issues
+    assert output[1][1] == f'{os.path.join(tmpdir.name, subfolder)}/mask1.png'
 
 
 def test_slice_stitch_images():
@@ -93,3 +94,25 @@ def test_pad_to_minimum_size():
     #dont pad if already large enough
     x3 = datalib.pad_to_minimum_size(x2, 10)
     assert x3.shape == x2.shape
+
+
+import traininglib.segmentation.segmentationmodel as segm
+
+def test_torchscript_paste_patch():
+    x         = torch.rand([1,3,1024,2048])
+    slack     = torch.randint(20,50, (1,))
+    patchsize = torch.randint(100,400, (1,))
+    patches   = []
+    grid      = segm.grid_for_patches(segm.image_size(x), patchsize, slack)
+    n         = len(grid.reshape(-1,4))
+    for i in range(n):
+        patches += [segm.get_patch_from_grid(x, grid, torch.as_tensor(i))]
+    
+    assert len(patches) == grid.shape[0]*grid.shape[1]
+    assert patches[0].shape == (1, 3, patchsize, patchsize)
+
+    y = torch.zeros_like(x)
+    for i, patch in enumerate(patches):
+        y = segm.paste_patch(y, patch, grid, torch.as_tensor(i), slack)
+
+    assert np.all( x.numpy() == y.numpy() )
