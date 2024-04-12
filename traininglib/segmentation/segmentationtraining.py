@@ -1,4 +1,5 @@
 import typing as tp
+import argparse
 import glob
 import hashlib
 import os
@@ -7,7 +8,7 @@ import numpy as np
 import torch, torchvision
 
 from ..trainingtask import TrainingTask, Loss, Metrics
-from .. import datalib
+from .. import datalib, modellib
 from ..datalib import random_crop, random_rotate_flip, Color, convert_rgb_to_mask
 
 SegmentationBatch = tp.Tuple[torch.Tensor, torch.Tensor]
@@ -185,6 +186,8 @@ class SegmentationDataset:
         
         print('Caching dataset into', cachedir)
         os.makedirs(cachedir, exist_ok=True)
+        open(os.path.join(cachedir, '.gitignore'), 'w').write('*')
+
         slack = max(self.patchsize // 8, 32)
         all_patch_pairs:tp.List[tp.Tuple[str,str]] = []
         for inputfile, annotationfile in filepairs:
@@ -210,4 +213,35 @@ class SegmentationDataset:
                 datalib.write_image_tensor(in_patchpath, in_patch)
                 datalib.write_image_tensor(an_patchpath, an_patch)
         return all_patch_pairs
+
+
+def start_segmentation_training_from_cli_args(
+    args:       argparse.Namespace,
+    model:      'SegmentationModel', 
+    task_kw:    tp.Dict[str, tp.Any]  = {},
+    fit_kw:     tp.Dict[str, tp.Any]  = {},
+) -> bool:
+    '''`SegmentationModel.start_training()` with basic config provided by
+       command line arguments from `args.base_segmentation_training_argparser()`'''
+    
+    trainsplit = datalib.load_file_pairs(args.trainsplit)
+    
+    valsplit = None
+    if args.valsplit is not None:
+        valsplit = datalib.load_file_pairs(args.valsplit)
+    
+    task_kw = {
+        'pos_weight':    args.pos_weight, 
+        'margin_weight': args.margin_weight,
+        'rotate':        args.rotate,
+    } | task_kw
+    return modellib.start_training_from_cli_args(
+        args, 
+        model, 
+        trainsplit, 
+        valsplit, 
+        task_kw=task_kw
+    )
+
+
 

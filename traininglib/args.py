@@ -48,6 +48,16 @@ def base_segmentation_training_argparser(
 ) -> argparse.ArgumentParser:
     parser = base_training_argparser()
     parser.add_argument(
+        '--trainsplit',
+        required = True, 
+        help     = 'Path to csv file containing input-target file pairs'
+    )
+    parser.add_argument(
+        '--valsplit', 
+        required = False, 
+        help     = 'Path to csv file containing input-target file pairs'
+    )
+    parser.add_argument(
         '--pos-weight',    
         type    = float, 
         default = pos_weight,    
