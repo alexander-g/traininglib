@@ -1,10 +1,15 @@
 import typing as tp
 import argparse
+import datetime
+import glob
+import os
+import re
 import time
 import torch
 
 def base_training_argparser() -> argparse.ArgumentParser:
-    '''Construct an ArgumentParser with commonly used parameters for code re-use'''
+    '''Construct an ArgumentParser with commonly used training parameters 
+       for code re-use'''
     parser = argparse.ArgumentParser()
     parser.add_argument('--inputsize', type=int,   default=512,  help='Default: 512px')
     parser.add_argument('--lr',        type=float, default=1e-3, help='Default: 1e-3')
@@ -74,5 +79,88 @@ def base_segmentation_training_argparser(
         action  = argparse.BooleanOptionalAction,
         default = True,
         help    = f'Rotate images during training'
+    )
+    return parser
+
+MODEL_PLACEHOLDER  = '<model>'
+LATEST_PLACEHOLDER = '<latest>'
+
+class InferenceArgumentParser(argparse.ArgumentParser):
+    def parse_args(self, *a, **kw) -> argparse.Namespace:
+        args = super().parse_args(*a, **kw)
+        
+        model_name  = os.path.basename(args.model)
+        args.output = args.output.replace(MODEL_PLACEHOLDER, model_name)
+        return args
+
+
+
+def validate_model_argument(x:str) -> str:
+    '''If the argument is a folder containing a single .pt.zip, return this file.
+       Replace placeholder <latest> with the latest trained model'''
+    if os.path.basename(x) == LATEST_PLACEHOLDER:
+        directory = os.path.dirname(x)
+        contents  = os.listdir(directory)
+        #reged for YYYY-MM-DD_HHh-MMm-SSs
+        pattern   = r"^\d{4}-\d{2}-\d{2}_\d{2}h\d{2}m\d{2}s_.*"
+        dated_folders = [
+            item for item in contents if re.match(pattern, item)
+        ]
+        if len(dated_folders) == 0:
+            raise FileNotFoundError(
+                f'Could not find checkpoints in specified model directory {directory}'
+            )
+
+        sorted_folders = sorted(
+            dated_folders, 
+            key = lambda x: datetime.datetime.strptime(x[:20], '%Y-%m-%d_%Hh%Mm%Ss')
+        )
+        # continue searching for the .pt.zip below
+        x = os.path.join(directory, sorted_folders[-1])
+    
+    if os.path.isdir(x):
+        contents = glob.glob( os.path.join(x, '*.pt.zip') )
+        if len(contents) == 0:
+            raise FileNotFoundError(
+                f'Specified model directory {x} does not contain a .pt.zip file'
+            )
+        if len(contents) > 1:
+            raise FileNotFoundError(
+                f'Specified model directory {x} contains multiple .pt.zip files'
+            )
+        x = contents[0]
+    
+    return x
+
+
+
+def base_inference_argparser() -> argparse.ArgumentParser:
+    '''Construct an ArgumentParser with commonly used inference parameters 
+       for code re-use'''
+    parser = InferenceArgumentParser()
+    parser.add_argument(
+        '--input', 
+        required = True, 
+        help     = 'Glob-like pattern to input images or path to csv split file',
+    )
+    parser.add_argument(
+        '--model', 
+        required = True,
+        type     = validate_model_argument,
+        help     = 'Path to .pt.zip model '\
+            '(or to a folder containing a single .pt.zip).'\
+            f'Placeholder {LATEST_PLACEHOLDER} uses last trained model.'
+    )
+    parser.add_argument(
+        '--output', 
+        default = f'./inference/{MODEL_PLACEHOLDER}', 
+        help    = 'Where to save results. '\
+            f'Placeholder {MODEL_PLACEHOLDER} replaced with model filename.',
+    )
+    parser.add_argument(
+        '--device', 
+        type    = cpu_or_gpu, 
+        default = _default_device(), 
+        help    = 'Which GPU to use (or CPU).',
     )
     return parser
