@@ -55,7 +55,7 @@ class SegmentationModel(BaseModel):
 
     def postprocess(self, raw:torch.Tensor, x:torch.Tensor) -> torch.Tensor:
         y = raw
-        if y.shape[2] != x.shape[2] or y.shape[3] != x.shape[3]:
+        if torch.is_tensor(y) and (y.shape[2] != x.shape[2] or y.shape[3] != x.shape[3]):
             y = datalib.resize_tensor(raw, x.shape[-2:], "bilinear")
         return y
     
@@ -98,9 +98,13 @@ class SegmentationModel(BaseModel):
         fit_kw:     tp.Dict[str, tp.Any] = {},
     ):
         colors  = [c.color for c in self.classes]
+        task_cls = SegmentationTask
+        if 'task_cls' in task_kw:
+            task_cls = task_kw.pop('task_cls')
+        
         task_kw = {'colors': colors, 'inputsize':self.inputsize} | task_kw
         return super()._start_training(
-            SegmentationTask, 
+            task_cls, 
             trainsplit, 
             valsplit,
             task_kw = task_kw, 
