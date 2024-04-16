@@ -48,7 +48,12 @@ class UNet(torch.nn.Module):
         self.up4 = self.UpBlock(C[-5]    + input_channels, 32)
         self.cls = torch.nn.Conv2d(32, output_channels, 3, padding=1)
     
-    def forward(self, x:torch.Tensor, sigmoid=False, return_features=False) -> torch.Tensor:
+    def forward(
+        self, 
+        x:               torch.Tensor, 
+        sigmoid:         bool = False, 
+        return_features: bool = False,
+    ) -> torch.Tensor:
         device = list(self.parameters())[0].device
         x      = x.to(device)
         

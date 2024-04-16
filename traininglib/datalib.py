@@ -51,11 +51,11 @@ def load_image(
         image   =   np.array(image)
     return image
 
-def ensure_imagetensor(x:str|np.ndarray|torch.Tensor) -> torch.Tensor:
+def ensure_imagetensor(x:str|np.ndarray|torch.Tensor, **kw) -> torch.Tensor:
     '''Convert input to a CHW image tensor (if needed).'''
     t:torch.Tensor
     if isinstance(x, str):
-        _t = load_image(x, to_tensor=True)
+        _t = load_image(x, to_tensor=True, **kw)
         #make mypy happy
         t  = tp.cast(torch.Tensor, _t)
     elif not torch.is_tensor(x):

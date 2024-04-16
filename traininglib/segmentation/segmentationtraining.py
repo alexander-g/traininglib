@@ -217,7 +217,7 @@ class SegmentationDataset:
 
 def start_segmentation_training_from_cli_args(
     args:       argparse.Namespace,
-    model:      'SegmentationModel', 
+    model:      'SegmentationModel',  # type: ignore
     task_kw:    tp.Dict[str, tp.Any]  = {},
     fit_kw:     tp.Dict[str, tp.Any]  = {},
 ) -> bool:

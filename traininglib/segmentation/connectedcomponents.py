@@ -40,7 +40,7 @@ def connected_components_max_pool(x:torch.Tensor, start:int = 0) -> torch.Tensor
 
     x = x.byte()
     n = len(x.reshape(-1))
-    labeled = torch.arange(start,start+n).float()
+    labeled = torch.arange(start,start+n, dtype=torch.float32, device=x.device)
     #shuffling makes convergence faster (in torchscript but not in onnx)
     #labeled = labeled[randperm(n)]
     labeled = labeled.reshape(x.size()) * x

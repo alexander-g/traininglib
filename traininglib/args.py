@@ -86,7 +86,7 @@ MODEL_PLACEHOLDER  = '<model>'
 LATEST_PLACEHOLDER = '<latest>'
 
 class InferenceArgumentParser(argparse.ArgumentParser):
-    def parse_args(self, *a, **kw) -> argparse.Namespace:
+    def parse_args(self, *a, **kw) -> argparse.Namespace: # type: ignore [override]
         args = super().parse_args(*a, **kw)
         
         model_name  = os.path.basename(args.model)
