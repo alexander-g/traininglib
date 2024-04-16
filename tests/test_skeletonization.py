@@ -99,3 +99,30 @@ def test_multipath():
     assert torch.all(labeled_paths[8:16,1] < 12)
     assert torch.all(labeled_paths[16:,1]  > 12)
 
+
+def test_rdp():
+    rdp = torch.jit.script(skel.rdp)
+
+    # Test simple straight line
+    path = torch.tensor([[0,0], [1,0], [2,0]])
+    simplified = rdp(path, 1.0)
+    expected = torch.tensor([[0,0], [2,0]])
+    assert torch.equal(simplified, expected)
+
+
+    # Test curve preserved at low epsilon
+    curved_path = torch.tensor([[0,0], [0.5, 0.8], [1,1], [1.5, 0.8], [2,0]])
+    simplified = rdp(curved_path, 0.1) 
+    print(simplified)
+    assert torch.equal(simplified, curved_path)
+
+    # Test curve simplified at high epsilon  
+    simplified = rdp(curved_path, 1.1)
+    expected = torch.tensor([[0,0], [2,0]])
+    assert torch.equal(simplified, expected)
+
+    # test single point line (dont throw an error)
+    path = curved_path[:1]
+    simplified = rdp(path, 0.5)
+    assert torch.equal(simplified, path)
+

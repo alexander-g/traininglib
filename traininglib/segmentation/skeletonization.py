@@ -146,7 +146,7 @@ def path_via_dfs(x:torch.Tensor) -> torch.Tensor:
             # NOTE: no continue because onnx doesnt like it
             #continue
         else:
-            distance = dist[p] + 1
+            distance = dist[py, px] + 1
             # 3x3 neighborhood
             y0,y1 = py-1, py+2
             x0,x1 = px-1, px+2
@@ -248,3 +248,53 @@ def paths_from_labeled_skeleton(
         paths = torch.cat([paths, labeled_path])
     return paths
 
+
+
+def _linspace_on_tensors(p0:torch.Tensor, p1:torch.Tensor, n:int) -> torch.Tensor:
+    '''torch.linspace() but accepts tensors. 
+       TODO: already built-in in torch v2.2, remove when upgrading'''
+    assert p0.shape == (2,) and p1.shape == (2,)
+
+    direction = (p1 - p0)
+    return p0 + direction * torch.linspace(0,1, n)[:,None]
+
+
+@torch.jit.script_if_tracing
+def rdp(path:torch.Tensor, epsilon:float) -> torch.Tensor:
+    '''Ramer-Douglas-Peucker polyline simplification algorithm.
+       torch.script() compatible.
+       `path` must be sorted from start of polyline to the end.'''
+    assert path.ndim == 2 and path.shape[1] == 2
+    assert epsilon > 0.0
+
+    n = len(path)
+    if n < 2:
+        return path
+    
+    points_to_keep = torch.zeros(n, dtype=torch.bool, device=path.device)
+    stack = torch.as_tensor([0, n-1], device=path.device).reshape(1,2)
+
+    while len(stack) > 0:
+        ij    = stack[0]
+        i,j   = ij[0], ij[1]
+        stack = stack[1:]
+        points_to_keep[i] = True
+        points_to_keep[j] = True
+
+        segment = path[i:j+1]
+        n  = len(segment)
+        p0 = segment[0]
+        p1 = segment[-1]
+
+        #redneck point-to-line distance
+        #TODO redo this properly
+        #linepoints = torch.linspace(p0, p1, n)
+        linepoints = _linspace_on_tensors(p0, p1, n)
+        distances  = ((segment - linepoints)**2).sum(-1)**0.5
+        
+        k = distances.argmax()
+        if distances[k] > epsilon:
+            segment0 = torch.stack([i, k+i])
+            segment1 = torch.stack([k+i, j])
+            stack = torch.cat([stack, segment0[None], segment1[None]])
+    return path[points_to_keep]
