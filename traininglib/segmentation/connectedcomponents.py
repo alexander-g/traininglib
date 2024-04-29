@@ -69,7 +69,7 @@ def connected_components_from_adjacency_list(adjlist:torch.Tensor) -> torch.Tens
     assert adjlist.shape[1] == 2
 
     relabeled = adjlist.clone()
-    visited   = torch.zeros(adjlist.shape, dtype=torch.bool)
+    visited   = torch.zeros(adjlist.shape, dtype=torch.bool, device=adjlist.device)
 
     cnt = 0
     while not torch.all(visited):
@@ -116,9 +116,9 @@ def _relabel(
 def _adjacency_at_borders(x:torch.Tensor, patchsize:int) -> torch.Tensor:
     assert x.ndim == 4
     W       = x.shape[-1]
-    adjlist = torch.empty([0, 2], dtype=torch.int64)
+    adjlist = torch.empty([0, 2], dtype=torch.int64, device=x.device)
     for i in range(patchsize-1, W, patchsize):
-        adjlist_i = torch.empty([0,2], dtype=torch.int64)
+        adjlist_i = torch.empty([0,2], dtype=torch.int64, device=x.device)
 
         xborder   = x[..., i:][..., :2]
         bordercomponents = connected_components_max_pool(xborder.to(torch.bool))
@@ -139,7 +139,7 @@ def _adjacency_at_borders(x:torch.Tensor, patchsize:int) -> torch.Tensor:
 def connected_components_patchwise(x:torch.Tensor, patchsize:int) -> torch.Tensor:
     assert x.ndim == 4
     H,W = x.shape[-2:]
-    y   = torch.zeros(x.shape, dtype=torch.int64)
+    y   = torch.zeros(x.shape, dtype=torch.int64, device=x.device)
     nel = 0
     for i in range(0, H, patchsize):
         for j in range(0, W, patchsize):

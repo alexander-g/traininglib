@@ -256,7 +256,7 @@ def _linspace_on_tensors(p0:torch.Tensor, p1:torch.Tensor, n:int) -> torch.Tenso
     assert p0.shape == (2,) and p1.shape == (2,)
 
     direction = (p1 - p0)
-    return p0 + direction * torch.linspace(0,1, n)[:,None]
+    return p0 + direction * torch.linspace(0,1, n, device=p0.device)[:,None]
 
 
 @torch.jit.script_if_tracing
