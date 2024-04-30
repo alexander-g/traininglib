@@ -7,14 +7,44 @@ import re
 import time
 import torch
 
-def base_training_argparser() -> argparse.ArgumentParser:
+# for convenience when importing
+Namespace      = argparse.Namespace
+ArgumentParser = argparse.ArgumentParser
+
+
+def base_training_argparser(
+    default_inputsize: int   = 512,
+    default_lr:        float = 1e-3,
+    default_epochs:    int   = 30,
+    default_batchsize: int   = 8,
+) -> argparse.ArgumentParser:
     '''Construct an ArgumentParser with commonly used training parameters 
        for code re-use'''
     parser = argparse.ArgumentParser()
-    parser.add_argument('--inputsize', type=int,   default=512,  help='Default: 512px')
-    parser.add_argument('--lr',        type=float, default=1e-3, help='Default: 1e-3')
-    parser.add_argument('--epochs',    type=int,   default=30,   help='Default: 30')
-    parser.add_argument('--batchsize', type=int,   default=8,    help='Default: 8')
+    parser.add_argument(
+        '--inputsize', 
+        type    = int,   
+        default = default_inputsize,  
+        help    = f'Default: {default_inputsize}px',
+    )
+    parser.add_argument(
+        '--lr',        
+        type    = float, 
+        default = default_lr, 
+        help    = f'Default: {default_lr:.0e}',
+    )
+    parser.add_argument(
+        '--epochs',    
+        type    = int,   
+        default = default_epochs,   
+        help    = f'Default: {default_epochs:d}',
+    )
+    parser.add_argument(
+        '--batchsize', 
+        type    = int,   
+        default = default_batchsize,    
+        help    = f'Default: {default_batchsize}',
+    )
     #TODO: warmup
     parser.add_argument(
         '--checkpointdir', 
