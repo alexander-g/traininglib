@@ -9,7 +9,7 @@ import torch
 from .. import datalib
 from ..datalib import Color
 from ..unet import UNet
-from ..modellib import BaseModel, load_weights
+from ..modellib import load_weights
 from .segmentationtraining import SegmentationTask
 from .connectedcomponents import (
     connected_components_max_pool,
@@ -17,6 +17,7 @@ from .connectedcomponents import (
     filter_components,
 )
 from .skeletonization import skeletonize, paths_from_labeled_skeleton
+from .patchwisemodel import PatchwiseModel
 
 
 class Class(tp.NamedTuple):
@@ -31,7 +32,7 @@ class SegmentationOutput(tp.NamedTuple):
 
 StateDict = tp.Dict[str, torch.Tensor]
 
-class SegmentationModel(BaseModel):
+class SegmentationModel(PatchwiseModel):
     def __init__(
         self, 
         inputsize:          int, 
@@ -44,14 +45,10 @@ class SegmentationModel(BaseModel):
         assert weights_backbone is None, NotImplemented
         if module is None:
             module = UNet(output_channels=len(classes))
-        super().__init__(module, inputsize)
+        super().__init__(module, inputsize, patchify=bool(patchify))
         if weights is not None:
             load_weights(weights, self)
-        
         self.classes   = classes
-        self.patchify  = patchify
-        if patchify:
-            self.slack = max(self.inputsize // 8, 32)
 
     def postprocess(self, raw:torch.Tensor, x:torch.Tensor) -> torch.Tensor:
         y = raw
@@ -59,28 +56,17 @@ class SegmentationModel(BaseModel):
             y = datalib.resize_tensor(raw, x.shape[-2:], "bilinear")
         return y
     
-    def prepare_image(self, *a, **kw) -> tp.Tuple[tp.List[torch.Tensor], torch.Tensor]:
-        x, x0 = super().prepare_image(*a, **kw)
-        if self.patchify:
-            x = datalib.slice_into_patches_with_overlap(x[0], self.inputsize, self.slack)
-        return x, x0
-    
     def finalize_inference(   # type: ignore [override]
         self, raw:tp.List[torch.Tensor], x:torch.Tensor
     ) -> SegmentationOutput:
-        raw = [y.cpu() for y in raw]
-
-        if self.patchify:
-            y = datalib.stitch_overlapping_patches(raw, x.shape, self.slack)
-        else:
-            assert len(raw) == 1, NotImplemented
-            y = raw[0]
+        
+        y = super().finalize_inference(raw, x)
         
         if y.shape[1] == 1:
             classmap = torch.sigmoid(y)[0,0].numpy()
             classmap = (classmap >= 0.5).astype('float32')
         else:
-            classmap = torch.argmax(y, dim=1).numpy()
+            classmap = torch.argmax(y, dim=1).numpy()[0]
         
         colors = [cls.color for cls in self.classes]
         return SegmentationOutput(
@@ -98,6 +84,7 @@ class SegmentationModel(BaseModel):
         fit_kw:     tp.Dict[str, tp.Any] = {},
     ):
         colors  = [c.color for c in self.classes]
+        #should be handled differently
         task_cls = SegmentationTask
         if 'task_cls' in task_kw:
             task_cls = task_kw.pop('task_cls')

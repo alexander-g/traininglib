@@ -76,12 +76,8 @@ def _default_device() -> str:
     return ( 'cuda:0' if torch.cuda.is_available() else 'cpu' )
 
 
-
-def base_segmentation_training_argparser(
-    pos_weight:float    = 1.0,
-    margin_weight:float = 0.0,
-) -> argparse.ArgumentParser:
-    parser = base_training_argparser()
+def base_training_argparser_with_splits(**kw) -> argparse.ArgumentParser:
+    parser = base_training_argparser(**kw)
     parser.add_argument(
         '--trainsplit',
         required = True, 
@@ -92,6 +88,15 @@ def base_segmentation_training_argparser(
         required = False, 
         help     = 'Path to csv file containing input-target file pairs'
     )
+    return parser
+
+
+def base_segmentation_training_argparser(
+    pos_weight:float    = 1.0,
+    margin_weight:float = 0.0,
+    **kw,
+) -> argparse.ArgumentParser:
+    parser = base_training_argparser_with_splits(**kw)
     parser.add_argument(
         '--pos-weight',    
         type    = float, 
@@ -112,6 +117,8 @@ def base_segmentation_training_argparser(
     )
     return parser
 
+
+
 MODEL_PLACEHOLDER  = '<model>'
 LATEST_PLACEHOLDER = '<latest>'
 
@@ -123,15 +130,13 @@ class InferenceArgumentParser(argparse.ArgumentParser):
         args.output = args.output.replace(MODEL_PLACEHOLDER, model_name)
         return args
 
-
-
 def validate_model_argument(x:str) -> str:
     '''If the argument is a folder containing a single .pt.zip, return this file.
        Replace placeholder <latest> with the latest trained model'''
     if os.path.basename(x) == LATEST_PLACEHOLDER:
         directory = os.path.dirname(x)
         contents  = os.listdir(directory)
-        #reged for YYYY-MM-DD_HHh-MMm-SSs
+        #regex for YYYY-MM-DD_HHh-MMm-SSs
         pattern   = r"^\d{4}-\d{2}-\d{2}_\d{2}h\d{2}m\d{2}s_.*"
         dated_folders = [
             item for item in contents if re.match(pattern, item)

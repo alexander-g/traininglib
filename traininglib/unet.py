@@ -18,7 +18,7 @@ class UNet(torch.nn.Module):
             self.convblock = torch.nn.Sequential(
                 torch.nn.Conv2d(inter_c, out_c, 3, padding=1, bias=False),
                 torch.nn.BatchNorm2d(out_c),
-                torch.nn.ReLU(),
+                #torch.nn.ReLU(),
             )
         def forward(self, x:torch.Tensor, skip_x:torch.Tensor, relu:bool=True) -> torch.Tensor:
             #x = resize_tensor(x, skip_x.shape[-2:], mode='nearest')   #TODO? mode='bilinear
@@ -26,6 +26,8 @@ class UNet(torch.nn.Module):
             x = torch.cat([x, skip_x], dim=1)
             x = self.conv1x1(x)
             x = self.convblock(x)
+            if relu:
+                x  = torch.nn.functional.relu(x)
             return x
     
     def __init__(
@@ -65,9 +67,10 @@ class UNet(torch.nn.Module):
         x = self.up1(x, X[1])
         x = self.up2(x, X[2])
         x = self.up3(x, X[3])
-        x = self.up4(x, X[4])
+        x = self.up4(x, X[4], relu=False)
         if return_features:
             return x
+        x = torch.nn.functional.relu(x)
         x = self.cls(x)
         if sigmoid:
             x = torch.sigmoid(x)

@@ -18,7 +18,7 @@ def test_small_imagesizes():
     PIL.Image.new('L',   (50,50)).save(os.path.join(tempdir.name, 'an0.png'))
     PIL.Image.new('L',   (35,65)).save(os.path.join(tempdir.name, 'an1.png'))
 
-    ds = segmentation.SegmentationDataset([
+    ds = segmentation.PatchedCachingDataset([
         (os.path.join(tempdir.name, 'im0.jpg'), os.path.join(tempdir.name, 'an0.png')),
         (os.path.join(tempdir.name, 'im1.png'), os.path.join(tempdir.name, 'an1.png')),
     ], patchsize=100, cachedir=os.path.join(tempdir.name, 'cache'))
