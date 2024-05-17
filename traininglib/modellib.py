@@ -164,7 +164,8 @@ def start_training_from_cli_args(
         fit_kw     = fit_kw,
     )
     model.save(paths.modelpath)
-    os.remove(paths.modelpath_tmp)
+    if paths.modelpath_tmp is not None:
+        os.remove(paths.modelpath_tmp)
     return True
 
 

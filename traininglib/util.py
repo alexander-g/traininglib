@@ -56,7 +56,7 @@ class CheckpointPaths(tp.NamedTuple):
     #path to the final saved model file
     modelpath:     str
     #path to a temporary model file, deleted after training
-    modelpath_tmp: str
+    modelpath_tmp: str|None
 
 def prepare_for_training(
     model:  'modellib.BaseModel', 
@@ -67,9 +67,11 @@ def prepare_for_training(
     print('Output directory:', destination)
     backup_code(destination)
 
-    #save already now and immediately reload
-    #to avoid inconsistencies if the source code changes during training
-    modelpath       = os.path.join(destination, name)
-    modelpath_tmp   = model.save(f'{modelpath}.tmp')
-    model           = modellib.load_model( modelpath_tmp )
+    modelpath = os.path.join(destination, name)
+    modelpath_tmp = None
+    if not args.debug:
+        #save already now and immediately reload
+        #to avoid inconsistencies if the source code changes during training
+        modelpath_tmp   = model.save(f'{modelpath}.tmp')
+        model           = modellib.load_model( modelpath_tmp )
     return model, CheckpointPaths(destination, modelpath, modelpath_tmp)

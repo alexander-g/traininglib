@@ -56,6 +56,11 @@ def base_training_argparser(
     parser.add_argument(
         '--device', type=cpu_or_gpu, default=_default_device(), help='Which GPU to use (or CPU).'
     )
+    parser.add_argument(
+        '--debug',
+        action = 'store_true',
+        help   = 'Debug mode: will not save and reload model to enable breakpoints',
+    )
     return parser
 
 
