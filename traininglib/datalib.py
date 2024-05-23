@@ -7,6 +7,11 @@ import PIL.Image
 PIL.Image.MAX_IMAGE_PIXELS = None
 
 
+FilePair   = tp.Tuple[str,str]
+FileTriple = tp.Tuple[str,str,str]
+FileTuple  = tp.Tuple[str,...]
+
+
 def create_dataloader(
     dataset, 
     batch_size: int, 
@@ -177,11 +182,11 @@ def convert_rgb_to_mask(
     return mask[:,None]
 
 
-def load_file_tuples(filepath:str, delimiter:str, n:int) -> tp.List[tp.List[str]]:
+def load_file_tuples(filepath:str, delimiter:str, n:int) -> tp.List[FileTuple]:
     '''Load n-tuples of file paths from a csv file and check that they exist.'''
     lines = open(filepath, 'r').read().strip().split('\n')
     dirname = os.path.dirname(filepath)
-    pairs:tp.List[tp.List[str]] = []
+    pairs:tp.List[FileTuple] = []
     for line in lines:
         pair = [f.strip() for f in line.split(delimiter)]
         if len(pair) != n:
@@ -192,18 +197,18 @@ def load_file_tuples(filepath:str, delimiter:str, n:int) -> tp.List[tp.List[str]
         pair = [f if os.path.isabs(f) else os.path.join(dirname, f) for f in pair]
         if not all(os.path.exists(p) for p in pair):
             raise Exception(f'Files not found: {pair}')
-        pairs.append(pair)
+        pairs.append(tuple(pair))
     return pairs
 
-def load_file_triples(filepath:str, delimiter:str=',') -> tp.List[tp.Tuple[str,str,str]]:
+def load_file_triples(filepath:str, delimiter:str=',') -> tp.List[FileTriple]:
     '''Load triples of file triples from a csv file and check that they exist.'''
     pairs = load_file_tuples(filepath, delimiter, n=3)
-    return tp.cast(tp.List[tp.Tuple[str,str,str]], pairs)
+    return tp.cast(tp.List[FileTriple], pairs)
 
-def load_file_pairs(filepath:str, delimiter:str=',') -> tp.List[tp.Tuple[str,str]]:
+def load_file_pairs(filepath:str, delimiter:str=',') -> tp.List[FilePair]:
     '''Load pairs of file paths from a csv file and check that they exist.'''
     pairs = load_file_tuples(filepath, delimiter, n=2)
-    return tp.cast(tp.List[tp.Tuple[str,str]], pairs)
+    return tp.cast(tp.List[FilePair], pairs)
 
 
 def collect_inputfiles(splitfile_or_glob:str, *a, **kw) -> tp.List[str]:
@@ -215,11 +220,26 @@ def collect_inputfiles(splitfile_or_glob:str, *a, **kw) -> tp.List[str]:
     else:
         return sorted(glob.glob(splitfile_or_glob))
 
+def save_file_tuples(filepath:str, filetuples:tp.List[FileTuple], delimiter:str=','):
+    assert len(filetuples)
+    lengths = [len(tuple) for tuple in filetuples]
+    assert all([l == lengths[0] for l in lengths]), 'Unequal tuple lengths'
+
+    lines = []
+    for i, tupl in enumerate(filetuples):
+        lines += [', '.join(tupl)]
+    txt = '\n'.join(lines)
+    open(filepath, 'w').write(txt)
+
+
 
 #Helper functions for slicing images (for CHW dimension ordering)
 def grid_for_patches(
-    imageshape:tp.Tuple[int,int]|torch.Size, patchsize:int, slack:int
+    imageshape: tp.Tuple[int,int]|torch.Size, 
+    patchsize:  int, 
+    slack:      int,
 ) -> np.ndarray:
+    assert len(imageshape) == 2
     H,W       = imageshape[:2]
     stepsize  = patchsize - slack
     grid      = np.stack( 
@@ -239,8 +259,17 @@ def slice_into_patches_with_overlap(
 ) -> tp.List[torch.Tensor]:
     image     = torch.as_tensor(image)
     grid      = grid_for_patches(image.shape[-2:], patchsize, slack)
-    patches   = [image[...,i0:i1, j0:j1] for i0,j0,i1,j1 in grid.reshape(-1, 4)]
+    return slice_into_patches_from_grid(image, grid)
+
+
+def slice_into_patches_from_grid(
+    image: torch.Tensor,
+    grid:  np.ndarray,
+) -> tp.List[torch.Tensor]:
+    assert grid.ndim == 3 and grid.shape[-1] == 4
+    patches = [image[...,i0:i1, j0:j1] for i0,j0,i1,j1 in grid.reshape(-1, 4)]
     return patches
+
 
 def stitch_overlapping_patches(
     patches:        tp.List[torch.Tensor], 

@@ -4,10 +4,12 @@ import os
 import pickle
 import typing as tp
 
+import numpy as np
 import torch
+
 from ..modellib import BaseModel
 from .. import datalib
-from ..datalib import random_crop, random_rotate_flip
+from ..datalib import random_crop, random_rotate_flip, FileTuple
 from ..trainingtask import TrainingTask, Loss, Metrics
 
 
@@ -143,7 +145,8 @@ class PatchedCachingDataset:
         self.filepairs = filepairs
         if patchsize is not None:
             self.patchsize = patchsize
-            self.filepairs = self._cache(filepairs, cachedir)
+            filetuples = tp.cast(tp.List[FileTuple], filepairs)
+            self.filepairs, self.grids = self._cache(filetuples, cachedir=cachedir)
     
     def __len__(self) -> int:
         return len(self.filepairs)
@@ -160,53 +163,103 @@ class PatchedCachingDataset:
     
     def _cache(
         self, 
-        filepairs:  tp.List[tp.Tuple[str,str]], 
-        cachedir:   str                         = './cache/', 
-        force:      bool                        = False
+        filepairs:  tp.List[FileTuple], 
+        prefixes:   tp.List[str] = ['in', 'an'],
+        cachedir:   str  = './cache/', 
+        force:      bool = False,
     ):
         '''Slice data into patches and cache them into a folder.'''
 
-        hash = hashlib.sha256( 
-            pickle.dumps([self.__dict__, filepairs])
-        ).hexdigest()
-        cachedir = os.path.join(cachedir, hash)
-        if os.path.exists(cachedir) and not force:
-            print('Re-using already cached folder', cachedir)
-            in_paths = sorted(glob.glob(os.path.join(cachedir, 'in', '*.png')))
-            an_paths = sorted(glob.glob(os.path.join(cachedir, 'an', '*.png')))
-            assert len(in_paths) == len(an_paths)
-            patch_pairs = list(zip(in_paths, an_paths))
-            return patch_pairs
+        cachedir = self._get_concrete_cachedir(filepairs, cachedir)
+        if not force:
+            patch_pairs = _load_if_cached(cachedir)
+            if patch_pairs is not None:
+                return patch_pairs, None
         
         print('Caching dataset into', cachedir)
         os.makedirs(cachedir, exist_ok=True)
         open(os.path.join(cachedir, '.gitignore'), 'w').write('*')
 
+        lists_of_cached_files:tp.List[ tp.List[str] ] = []
         slack = max(self.patchsize // 8, 32)
-        all_patch_pairs:tp.List[tp.Tuple[str,str]] = []
-        for inputfile, annotationfile in filepairs:
-            in_data = datalib.load_image(inputfile, to_tensor=True)
-            in_data = tp.cast(torch.Tensor, in_data)
-            in_data = datalib.pad_to_minimum_size(in_data, self.patchsize)
+        for i, prefix in enumerate(prefixes):
+            files_i = [ftuple[i] for ftuple in filepairs]
+            cached_files_i, cached_grids_i = slice_and_cache_images(
+                cachedir,
+                prefix,
+                files_i,
+                self.patchsize,
+                slack,
+            )
+            lists_of_cached_files.append(cached_files_i)
 
-            an_data = datalib.load_image(annotationfile, to_tensor=True)
-            an_data = tp.cast(torch.Tensor, an_data)
-            an_data = datalib.pad_to_minimum_size(an_data, self.patchsize)
-            
-            in_patches = datalib.slice_into_patches_with_overlap(in_data, self.patchsize, slack)
-            an_patches = datalib.slice_into_patches_with_overlap(an_data, self.patchsize, slack)
-            for i, (in_patch, an_patch) in enumerate(zip(in_patches, an_patches)):
-                in_patchpath = os.path.join(
-                    cachedir, 'in', f'{os.path.basename(inputfile)}.{i:03d}.png'
-                )
-                an_patchpath = os.path.join(
-                    cachedir, 'an', f'{os.path.basename(annotationfile)}.{i:03d}.png'
-                )
-                all_patch_pairs.append((in_patchpath, an_patchpath))
+        all_patch_pairs:tp.List[tp.Tuple[str,str]] = \
+            list(zip(*lists_of_cached_files))
+        
+        cachefile = os.path.join(cachedir, 'cachefile.csv')
+        datalib.save_file_tuples(cachefile, all_patch_pairs)
 
-                datalib.write_image_tensor(in_patchpath, in_patch)
-                datalib.write_image_tensor(an_patchpath, an_patch)
-        return all_patch_pairs
+        # NOTE: assuming cached_coords are all the same
+        return all_patch_pairs, cached_grids_i
+    
+    def _get_concrete_cachedir(
+        self, 
+        filepairs:  tp.List[FileTuple], 
+        cachedir:   str,
+    ) -> str:
+        hash = hashlib.sha256( 
+            pickle.dumps([self.__dict__, filepairs])
+        ).hexdigest()
+        cachedir = os.path.join(cachedir, hash)
+        return cachedir
+
+
+def _load_if_cached(cachedir:str) -> tp.List[FileTuple]|None:
+    cachefile = os.path.join(cachedir, 'cachefile.csv')
+    if os.path.exists(cachefile):
+        print('Re-using already cached folder', cachedir)
+        # TODO: hardcoded n=2
+        return datalib.load_file_tuples(cachefile, n=2, delimiter=',')
+    return None
+
+
+class CachingResult:
+    # all lists
+    cached_files:  tp.List[str]
+    originalfiles: tp.List[str]
+    coordinates:   tp.List[str]
+
+
+def slice_and_cache_images(
+    directory:  str,
+    prefix:     str,
+    imagefiles: tp.List[str], 
+    patchsize:  int,
+    slack:      int,
+) -> tp.Tuple[tp.List[str], tp.List[np.ndarray]]:
+    os.makedirs(directory, exist_ok=True)
+    cached_files:tp.List[str] = []
+    cached_coords:tp.List[np.ndarray] = []
+    cached_grids: tp.List[np.ndarray] = []
+
+    for imagefile in imagefiles:
+        basename  = os.path.basename(imagefile)
+
+        imagedata = datalib.load_image(imagefile, to_tensor=True)
+        imagedata = tp.cast(torch.Tensor, imagedata)
+        imagedata = datalib.pad_to_minimum_size(imagedata, patchsize)
+
+        grid = datalib.grid_for_patches(imagedata.shape[-2:], patchsize, slack)
+        patches = \
+            datalib.slice_into_patches_from_grid(imagedata, grid)
+        grid = grid.reshape(-1,4)
+        for i, patch in enumerate(patches):
+            patchpath = os.path.join(directory, prefix, f'{basename}.{i:03d}.png')
+            cached_files.append(patchpath)
+            cached_coords.append(grid[i])
+            datalib.write_image_tensor(patchpath, patch)
+        cached_grids.append(grid)
+    return cached_files, cached_grids
 
 
 
