@@ -100,22 +100,35 @@ class PatchwiseTrainingTask(TrainingTask):
         t = torch.stack(new_t)
         return x,t
     
-    def create_dataloaders(
-        self, trainsplit:tp.List, valsplit:tp.List|None = None, **ld_kw
+    def _create_dataloaders(
+        self, 
+        DatasetClass,
+        trainsplit:  tp.List,
+        valsplit:    tp.List|None = None,
+        trainpatchfactor: float = 2,
+        **ld_kw,
     ) -> tp.Tuple[tp.Iterable, tp.Iterable|None]:
         patchsize_train = patchsize_val = None
         if self.patchify:
             # NOTE: *2 for cropping during augmentation
-            patchsize_train = self.inputsize * 2
+            patchsize_train = self.inputsize * trainpatchfactor
             patchsize_val   = self.inputsize
         
-        ds_train = PatchedCachingDataset(trainsplit, patchsize_train)
+        ds_train = DatasetClass(trainsplit, patchsize_train)
         ld_train = datalib.create_dataloader(ds_train, shuffle=True, **ld_kw)
         ld_val   = None
         if valsplit is not None:
-            ds_val = PatchedCachingDataset(valsplit, patchsize_val)
+            ds_val = DatasetClass(valsplit, patchsize_val)
             ld_val = datalib.create_dataloader(ds_val, shuffle=False, **ld_kw)
         return ld_train, ld_val
+
+    def create_dataloaders(
+        self, 
+        trainsplit: tp.List, 
+        valsplit:   tp.List|None = None, 
+        **ld_kw,
+    ) -> tp.Tuple[tp.Iterable, tp.Iterable|None]:
+        return self._create_dataloaders(PatchedCachingDataset, trainsplit, valsplit, **ld_kw)
     
     def prepare_batch(self, raw_batch:TensorPair, augment:bool) -> TensorPair:
         x,t = raw_batch
