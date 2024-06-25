@@ -64,7 +64,7 @@ class SegmentationTask(PatchwiseTrainingTask):
     
     
 
-
+# TODO: this is not batch-aware!
 def margin_loss_fn(y:torch.Tensor, t:torch.Tensor) -> torch.Tensor:
     '''Loss pushing positive and negative samples apart'''
     assert t.ndim == 4 and y.ndim == 4
@@ -82,6 +82,49 @@ def margin_loss_fn(y:torch.Tensor, t:torch.Tensor) -> torch.Tensor:
     return torch.nn.functional.margin_ranking_loss(
         y_pos, y_neg, torch.ones_like(y_pos), margin=1.0
     )
+    
+@torch.jit.script_if_tracing
+def margin_loss_multilabel(
+    y:torch.Tensor, 
+    t:torch.Tensor, 
+    logits:bool,
+    margin:float = 1.0
+) -> torch.Tensor:
+    '''Loss pushing positive and negative samples apart,
+       applied individually per batch and per channel'''
+    assert t.ndim == y.ndim == 4
+    assert t.shape == y.shape
+    assert t.dtype == torch.bool
+
+    if logits:
+        y = y.sigmoid()
+
+    all_y_pos:tp.List[torch.Tensor] = []    
+    all_y_neg:tp.List[torch.Tensor] = []
+    for b in range(t.shape[0]):
+        for c in range(t.shape[1]):
+            y_bc = y[b,c]
+            t_bc = t[b,c]
+            y_pos = y_bc[t_bc]
+            y_neg = y_bc[~t_bc]
+            n     = min(len(y_pos), len(y_neg))
+            y_pos = y_pos[torch.randperm(len(y_pos))[:n]]
+            y_neg = y_neg[torch.randperm(len(y_neg))[:n]]
+
+            all_y_pos.append(y_pos)
+            all_y_neg.append(y_neg)
+
+    all_y_pos = torch.cat(all_y_pos)
+    all_y_neg = torch.cat(all_y_neg)
+    loss = torch.nn.functional.margin_ranking_loss(
+        all_y_pos,
+        all_y_neg,
+        torch.ones_like(all_y_pos),
+        margin,
+        reduction = 'none',
+    )
+    return torch.nan_to_num( torch.nanmean(loss) )
+
 
 
 

@@ -2,6 +2,7 @@ import os
 import tempfile
 
 import PIL.Image
+import torch
 
 from traininglib import segmentation, datalib
 
@@ -27,3 +28,28 @@ def test_small_imagesizes():
     #assert no exception
     assert len(list(ld)) == 1
 
+
+
+def test_margin_loss_multilabel():
+    y5 = torch.zeros([2,3,50,50])
+    t5 = torch.zeros([2,3,50,50]).bool()
+
+    loss = segmentation.margin_loss_multilabel(y5,t5, logits=True)
+    assert torch.isfinite(loss)
+
+
+    y5[1,0,1:] = 1
+    y5[0,2,1:] = 1
+    t5[1,0,1:] = 1
+    t5[0,2,1:] = 1
+    loss = segmentation.margin_loss_multilabel(y5,t5, logits=True)
+    # not zero because logits = True
+    assert loss > 0
+
+    loss = segmentation.margin_loss_multilabel(y5,t5, logits=False)
+    # should be zero, esp should not take samples inbetween batches / channels
+    assert loss == 0
+
+    loss = segmentation.margin_loss_fn(y5[:,:1],t5[:,:1])
+    # TODO: fix margin_loss_fn()
+    #assert loss == 0
