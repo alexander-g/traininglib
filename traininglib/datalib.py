@@ -304,3 +304,36 @@ def stitch_overlapping_patches(
         out[...,di[0]:di[2], di[1]:di[3]] = patch[...,gi[0]:gi[2], gi[1]:gi[3]]
     return out
 
+
+
+def normalize(x:torch.Tensor, axis:int, eps:float=1e-5) -> torch.Tensor:
+    # TODO: torch.cdist
+    return x / (x**2).sum(dim=axis, keepdim=True).clamp_min(eps)**0.5
+
+
+def assert_coordinates_within_bounds(c_xy:torch.Tensor, imageshape:tp.Tuple[int,int]):
+    assert c_xy.ndim == 2 and c_xy.shape[1] == 2
+
+    assert torch.all(c_xy >= 0)
+    shape = torch.as_tensor(imageshape)
+    assert torch.all(c_xy[:,0] < shape[1])  # x
+    assert torch.all(c_xy[:,1] < shape[0])  # y
+
+def sample_tensor_at_coordinates(x:torch.Tensor, c_xy:torch.Tensor) -> torch.Tensor:
+    assert x.ndim == 4, f'Expected [BCHW], got {x.shape}'
+    assert c_xy.ndim == 3 and c_xy.shape[-1] == 2, f'Expected [BN2], got {c_xy.shape}'
+    assert x.shape[0] == c_xy.shape[0]
+    
+    H,W = x.shape[-2:]
+    assert_coordinates_within_bounds(c_xy.reshape(-1,2), (H,W))
+
+    # scale to -1..+1
+    # NOTE: +0.5 so that x[10,5] == sample_tensor_at_coordinates(x, [5,10])
+    c_scaled = (c_xy + 0.5) / torch.as_tensor([W,H], device=c_xy.device) *2 -1
+    samples  = torch.nn.functional.grid_sample(
+        x, 
+        c_scaled[:,None], 
+        mode          = 'bilinear', 
+        align_corners = False,
+    )[:,:,0]
+    return samples

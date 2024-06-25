@@ -116,3 +116,33 @@ def test_torchscript_paste_patch():
         y = segm.paste_patch(y, patch, grid, torch.as_tensor(i), slack)
 
     assert np.all( x.numpy() == y.numpy() )
+
+
+
+def test_sample_tensor_at_coordinates():
+    Z = torch.zeros([2,5,100,90])
+    Z[0,2,77,77] = 77.7
+    Z[0,2, 0, 0] = 11.1
+    Z[1,4,33,44] = 33.3
+    kp = torch.as_tensor([
+        [77,77],
+        [44,33],
+    ]).reshape(2,1,2)
+
+    samples = datalib.sample_tensor_at_coordinates(Z, kp)
+    assert samples.shape == (2,5,1)
+    assert torch.all( samples[0,:,0] == Z[0,:,77,77] )
+    assert torch.all( samples[1,:,0] == Z[1,:,33,44] )
+
+    raised_error = 0
+    try:
+        # out of bounds
+        kp2 = torch.as_tensor([
+            [-1, -1],
+            [10000, 33],
+        ])
+        should_fail = datalib.sample_tensor_at_coordinates(Z,kp2)
+    except AssertionError:
+        raised_error = 1
+
+    assert raised_error
