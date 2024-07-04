@@ -11,6 +11,11 @@ FilePair   = tp.Tuple[str,str]
 FileTriple = tp.Tuple[str,str,str]
 FileTuple  = tp.Tuple[str,...]
 
+TensorPair = tp.Tuple[torch.Tensor, torch.Tensor]
+
+#width first
+ImageSize = tp.Tuple[int,int]
+
 
 def create_dataloader(
     dataset, 
@@ -319,21 +324,38 @@ def assert_coordinates_within_bounds(c_xy:torch.Tensor, imageshape:tp.Tuple[int,
     assert torch.all(c_xy[:,0] < shape[1])  # x
     assert torch.all(c_xy[:,1] < shape[0])  # y
 
-def sample_tensor_at_coordinates(x:torch.Tensor, c_xy:torch.Tensor) -> torch.Tensor:
-    assert x.ndim == 4, f'Expected [BCHW], got {x.shape}'
-    assert c_xy.ndim == 3 and c_xy.shape[-1] == 2, f'Expected [BN2], got {c_xy.shape}'
-    assert x.shape[0] == c_xy.shape[0]
+def sample_tensor_at_coordinates(
+    t:    torch.Tensor, 
+    c_xy: torch.Tensor,
+    padding_mode:str|None = None, # zeros, border, reflection
+) -> torch.Tensor:
+    t_ndim = t.ndim
+    c_ndim = c_xy.ndim
+
+    assert t_ndim in [3,4], f'Expected [BCHW] or [CHW], got {t.shape}'
+    assert c_ndim in [2,3] and c_xy.shape[-1] == 2, \
+        f'Expected [BN2] or [N2], got {c_xy.shape}'
+    if t_ndim == 3:
+        t = t[None]
+    if c_ndim == 2:
+        c_xy = c_xy[None]
+    assert t.shape[0] == c_xy.shape[0]
     
-    H,W = x.shape[-2:]
-    assert_coordinates_within_bounds(c_xy.reshape(-1,2), (H,W))
+    H,W = t.shape[-2:]
+    if padding_mode is None:
+        assert_coordinates_within_bounds(c_xy.reshape(-1,2), (H,W))
 
     # scale to -1..+1
     # NOTE: +0.5 so that x[10,5] == sample_tensor_at_coordinates(x, [5,10])
     c_scaled = (c_xy + 0.5) / torch.as_tensor([W,H], device=c_xy.device) *2 -1
     samples  = torch.nn.functional.grid_sample(
-        x, 
+        t, 
         c_scaled[:,None], 
         mode          = 'bilinear', 
         align_corners = False,
+        padding_mode  = padding_mode or 'zeros',
     )[:,:,0]
+
+    if t_ndim == 3:
+        samples = samples[0]
     return samples

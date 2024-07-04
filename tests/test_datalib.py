@@ -146,3 +146,9 @@ def test_sample_tensor_at_coordinates():
         raised_error = 1
 
     assert raised_error
+
+    # non-batched
+    samples2 = datalib.sample_tensor_at_coordinates(Z[0], kp[0])
+    assert torch.all(samples2 == samples[0])
+    
+
