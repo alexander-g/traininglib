@@ -316,6 +316,27 @@ def normalize(x:torch.Tensor, axis:int, eps:float=1e-5) -> torch.Tensor:
     return x / (x**2).sum(dim=axis, keepdim=True).clamp_min(eps)**0.5
 
 
+def within_bounds_coordinates_mask(
+    c_xy:       torch.Tensor, 
+    imageshape: tp.Tuple[int,int],
+) -> torch.Tensor:
+    assert c_xy.ndim == 2 and c_xy.shape[1] == 2
+    
+    shape = torch.as_tensor(imageshape)
+    mask = (
+        torch.all(c_xy >= 0, dim=1)
+        & (c_xy[:,0] < shape[1])
+        & (c_xy[:,1] < shape[0])
+    )
+    return mask
+
+def filter_out_of_bounds_coordinates(
+    c_xy:       torch.Tensor, 
+    imageshape: tp.Tuple[int,int],
+) -> torch.Tensor:
+    mask = within_bounds_coordinates_mask(c_xy, imageshape)
+    return c_xy[mask]
+
 def assert_coordinates_within_bounds(c_xy:torch.Tensor, imageshape:tp.Tuple[int,int]):
     assert c_xy.ndim == 2 and c_xy.shape[1] == 2
 

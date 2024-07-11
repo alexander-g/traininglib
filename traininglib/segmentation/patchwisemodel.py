@@ -13,8 +13,7 @@ from ..datalib import random_crop, random_rotate_flip, FileTuple
 from ..trainingtask import TrainingTask, Loss, Metrics
 
 
-
-TensorPair = tp.Tuple[torch.Tensor, torch.Tensor]
+TensorPair = datalib.TensorPair
 
 
 
