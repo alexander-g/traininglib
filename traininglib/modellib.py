@@ -155,6 +155,7 @@ def start_training_from_cli_args(
         'lr':              args.lr,
         'batch_size':      args.batchsize,
         'checkpoint_dir':  paths.checkpointdir, 
+        'device':          args.device,
     } | fit_kw
 
     model.start_training(
