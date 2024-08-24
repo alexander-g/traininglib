@@ -312,8 +312,14 @@ def stitch_overlapping_patches(
 
 
 def normalize(x:torch.Tensor, axis:int, eps:float=1e-5) -> torch.Tensor:
+    '''L2 normalization along axis'''
     # TODO: torch.cdist
     return x / (x**2).sum(dim=axis, keepdim=True).clamp_min(eps)**0.5
+
+def l1_normalize(x:torch.Tensor, axis:int, eps:float=1e-5) -> torch.Tensor:
+    '''L1 normalization along axis'''
+    return x / x.sum(dim=axis, keepdim=True).clamp_min(eps)
+
 
 
 def within_bounds_coordinates_mask(

@@ -209,7 +209,7 @@ class PatchedCachingDataset:
             list(zip(*lists_of_cached_files))
         
         cachefile = os.path.join(cachedir, 'cachefile.csv')
-        datalib.save_file_tuples(cachefile, all_patch_pairs)
+        datalib.save_file_tuples(cachefile, all_patch_pairs) # type: ignore
 
         # NOTE: assuming cached_coords are all the same
         return all_patch_pairs, cached_grids_i

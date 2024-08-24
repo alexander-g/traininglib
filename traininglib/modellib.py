@@ -18,7 +18,7 @@ class BaseModel(torch.nn.Module):
     def forward(self, x:torch.Tensor, *a, **kw) -> torch.Tensor:
         x0 = x
         x  = self.preprocess(x)
-        y  = self.module(x)
+        y  = self.module(x, *a, **kw)
         y  = self.postprocess(y, x0)
         return y
     
