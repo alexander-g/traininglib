@@ -386,3 +386,43 @@ def sample_tensor_at_coordinates(
     if t_ndim == 3:
         samples = samples[0]
     return samples
+
+
+def rot90_coordinates(
+    c_xy:       torch.Tensor, 
+    imageshape: tp.Tuple[int,int], 
+    k:          int,
+) -> torch.Tensor:
+    assert c_xy.ndim >= 1 and c_xy.shape[-1] == 2
+    c_shape = c_xy.shape
+    c_xy = c_xy.reshape(-1,2)
+    
+    k   = k % 4
+    dev = c_xy.device
+    H,W = torch.tensor(imageshape, device=dev) - 1
+    
+    if k == 1:
+        c_xy = (
+            torch.tensor([0,H]).to(dev) 
+            + torch.flip(c_xy, dims=[-1]) 
+            * torch.tensor([1,-1]).to(dev)
+        )
+    if k == 2:
+        c_xy = (
+            torch.tensor([W,H]).to(dev) 
+            + c_xy 
+            * torch.tensor([-1,-1]).to(dev)
+        )
+    if k == 3:
+        c_xy = (
+            torch.tensor([W,0]).to(dev) 
+            + torch.flip(c_xy, dims=[-1]) 
+            * torch.tensor([-1,1]).to(dev)
+        )
+    return c_xy.reshape(c_shape)
+
+# shape: (100,100)
+# k=1, (80,10) -> (10,20)
+# k=2, (80,10) -> (90,20)
+# k=3, (80,10) -> (20,90)
+
