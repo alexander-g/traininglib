@@ -80,6 +80,17 @@ class UNet(torch.nn.Module):
     
 
 
+class UNetHead(torch.nn.Sequential):
+    def __init__(self, channels:tp.List[int] = [32,32,32,1]):
+        modules:tp.List[torch.nn.Module]  = []
+        for i,c in enumerate(channels[:-1]):
+            modules.append(torch.nn.Conv2d(c, channels[i+1], kernel_size=1))
+            if i < len(channels) - 2:
+                modules.append(torch.nn.ReLU())
+        
+        super().__init__(*modules)
+
+
 def _clone_conv2d_with_new_input_channels(
     prev:torch.nn.Conv2d, new_input_channels:int
 ) -> torch.nn.Conv2d:
