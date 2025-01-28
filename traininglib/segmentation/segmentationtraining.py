@@ -158,4 +158,30 @@ def start_segmentation_training_from_cli_args(
     )
 
 
+def precision_recall(
+    ypred: torch.Tensor, 
+    ytrue: torch.Tensor,
+    n_classes: int,
+) -> tp.Tuple[tp.List[float], tp.List[float]]:
+    assert ypred.dtype == ytrue.dtype == torch.int64
+    assert ypred.shape == ytrue.shape
 
+    precision: tp.List[float] = []
+    recall:    tp.List[float] = []
+
+    # binary if n_classes == 1
+    for cls in range(n_classes) if n_classes > 1 else [1]:
+        preds_cls   = (ypred == cls)
+        targets_cls = (ytrue == cls)
+
+        TP = int( (preds_cls & targets_cls).sum() )
+        FP = int( (preds_cls & ~targets_cls).sum() )
+        FN = int( (~preds_cls & targets_cls).sum() )
+
+        p = TP / (TP + FP) if (TP + FP) > 0 else 0
+        r = TP / (TP + FN) if (TP + FN) > 0 else 0
+
+        precision.append(p)
+        recall.append(r)
+
+    return precision, recall
