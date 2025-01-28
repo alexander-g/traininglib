@@ -1,4 +1,7 @@
+import os
 import typing as tp
+import warnings
+
 import numpy as np
 import torch, torchvision
 
@@ -84,7 +87,15 @@ class TrainingTask(torch.nn.Module):
         callback   = None,
         amp:       bool = False,
     ) -> None:
+        n_batches = len(loader)
+        loader_it = iter(loader)
+        for i in range(n_batches):
+            batch = next(loader_it)
         
+        
+        # warmup for first epoch
+        for i, batch in enumerate(loader):
+
         # warmup for first epoch
         for i, batch in enumerate(loader):
             optimizer.zero_grad()
@@ -93,12 +104,13 @@ class TrainingTask(torch.nn.Module):
                 loss, logs = self.training_step(batch)
             logs["lr"] = optimizer.param_groups[0]["lr"]
 
-            scaler.scale(loss).backward()
+            loss = scaler.scale(loss)
+            loss.backward()
             scaler.step(optimizer)
             scaler.update()
 
             if callback is not None:
-                callback.on_batch_end(logs, i, len(loader))  # type: ignore [arg-type]
+                callback.on_batch_end(logs, i, n_batches)  # type: ignore [arg-type]
         
         #TODO: scheduler.step inside loop
         if scheduler:
@@ -216,16 +228,32 @@ class PrintMetricsCallback:
 
     def on_epoch_end(self, epoch: int) -> None:
         self.epoch = epoch + 1
+        self.print_accumulated_metrics(self.epoch, trim=False)
         self.logs = {}
-        print()  # newline
 
     def on_batch_end(self, logs: tp.Dict, batch_i: int, n_batches: int) -> None:
         self.accumulate_logs(logs)
         percent = (batch_i + 1) / n_batches
-        metrics_str = " | ".join(
-            [f"{k}:{float(np.nanmean(v)):>8.5f}" for k, v in self.logs.items()]
-        )
-        print(f"[{self.epoch:04d}|{percent:.2f}] {metrics_str}", end="\r")
+        self.print_accumulated_metrics(percent, end='\r', trim=True)
+    
+    def print_accumulated_metrics(
+        self, 
+        progress: int|float, 
+        end:      str|None = None,
+        trim:     bool     = False,
+    ) -> None:
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            metrics_str = " | ".join(
+                [f"{k}:{float(np.nanmean(v)):>8.5f}" for k, v in self.logs.items()]
+            )
+        progress_str = \
+            f'{progress:.2f}' if type(progress) == float else f'{progress:4d}'
+        print_str = f'[{progress_str}] {metrics_str}'
+        if trim:
+            n_columns = os.get_terminal_size().columns
+            print_str = print_str[:n_columns]
+        print(print_str, end=end)
 
     def accumulate_logs(self, newlogs: tp.Dict) -> None:
         for k, v in newlogs.items():
