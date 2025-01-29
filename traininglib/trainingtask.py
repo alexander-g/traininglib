@@ -91,13 +91,6 @@ class TrainingTask(torch.nn.Module):
         loader_it = iter(loader)
         for i in range(n_batches):
             batch = next(loader_it)
-        
-        
-        # warmup for first epoch
-        for i, batch in enumerate(loader):
-
-        # warmup for first epoch
-        for i, batch in enumerate(loader):
             optimizer.zero_grad()
 
             with torch.autocast("cuda", enabled=amp):
@@ -157,7 +150,10 @@ class TrainingTask(torch.nn.Module):
         if callback is not None:
             cb = TrainingProgressCallback(callback, epochs)
         else:
-            cb = PrintMetricsCallback()
+            logfile = \
+                None if checkpoint_dir is None \
+                    else os.path.join(checkpoint_dir, 'log.txt')
+            cb = PrintMetricsCallback(logfile)
         
         ld_kw = {'batch_size':batch_size}
         ld_train, ld_val = self.create_dataloaders(trainsplit, valsplit, **ld_kw)
@@ -222,13 +218,16 @@ class TrainingTask(torch.nn.Module):
 class PrintMetricsCallback:
     """Prints metrics after each training epoch in a compact table"""
 
-    def __init__(self):
+    def __init__(self, logfile:tp.Optional[str] = None):
         self.epoch = 0
         self.logs = {}
+        self.logfile = logfile
+
 
     def on_epoch_end(self, epoch: int) -> None:
         self.epoch = epoch + 1
         self.print_accumulated_metrics(self.epoch, trim=False)
+        self.log_metrics_to_file()
         self.logs = {}
 
     def on_batch_end(self, logs: tp.Dict, batch_i: int, n_batches: int) -> None:
@@ -236,12 +235,7 @@ class PrintMetricsCallback:
         percent = (batch_i + 1) / n_batches
         self.print_accumulated_metrics(percent, end='\r', trim=True)
     
-    def print_accumulated_metrics(
-        self, 
-        progress: int|float, 
-        end:      str|None = None,
-        trim:     bool     = False,
-    ) -> None:
+    def format_metrics_string(self, progress:int|float) -> str:
         with warnings.catch_warnings():
             warnings.simplefilter('ignore')
             metrics_str = " | ".join(
@@ -250,6 +244,15 @@ class PrintMetricsCallback:
         progress_str = \
             f'{progress:.2f}' if type(progress) == float else f'{progress:4d}'
         print_str = f'[{progress_str}] {metrics_str}'
+        return print_str
+
+    def print_accumulated_metrics(
+        self, 
+        progress: int|float, 
+        end:      str|None = None,
+        trim:     bool     = False,
+    ) -> None:
+        print_str = self.format_metrics_string(progress)
         if trim:
             n_columns = os.get_terminal_size().columns
             print_str = print_str[:n_columns]
@@ -258,6 +261,13 @@ class PrintMetricsCallback:
     def accumulate_logs(self, newlogs: tp.Dict) -> None:
         for k, v in newlogs.items():
             self.logs[k] = self.logs.get(k, []) + [v]
+    
+    def log_metrics_to_file(self, progress:int|float) -> None:
+        if self.logfile is None:
+            return
+        
+        print_str = self.format_metrics_string(self.epoch)
+        open(self.logfile, 'a').write(print_str + '\n')
 
 
 class TrainingProgressCallback:
