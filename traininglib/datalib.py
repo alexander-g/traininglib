@@ -218,7 +218,7 @@ def load_file_pairs(filepath:str, delimiter:str=',') -> tp.List[FilePair]:
 
 def collect_inputfiles(splitfile_or_glob:str, *a, **kw) -> tp.List[str]:
     '''Return a list of input images, either from a csv split file or by expanding a glob'''
-    if splitfile_or_glob.endswith('.csv'):
+    if splitfile_or_glob.endswith('.csv') or splitfile_or_glob.endswith('.txt'):
         pairs  = load_file_pairs(splitfile_or_glob)
         inputs = [i for i,a in pairs]
         return inputs
