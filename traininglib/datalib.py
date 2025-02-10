@@ -421,8 +421,23 @@ def rot90_coordinates(
         )
     return c_xy.reshape(c_shape)
 
-# shape: (100,100)
-# k=1, (80,10) -> (10,20)
-# k=2, (80,10) -> (90,20)
-# k=3, (80,10) -> (20,90)
+
+def adjust_coordinates_for_crop(
+    c_xy:     torch.Tensor,
+    cropbox:  tp.Tuple[int,int,int,int],
+    new_size: tp.Tuple[int,int],
+) -> torch.Tensor:
+    '''Modify coordinates c_xy as if the corresponding image was cropped at
+       coordinates provided by cropbox and scaled to new_size.
+       (new_size is width,height, cropbox is left,top,width,height) '''
+    assert c_xy.ndim >= 1 and c_xy.shape[-1] == 2
+
+    left, top, width, height = cropbox
+    new_width, new_height = new_size
+
+    new_c_xy = torch.stack([
+        (c_xy[..., 0] - left) / width * new_width,
+        (c_xy[..., 1] - top)  / height * new_height,
+    ], dim=-1)
+    return new_c_xy
 

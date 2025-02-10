@@ -152,3 +152,35 @@ def test_sample_tensor_at_coordinates():
     assert torch.all(samples2 == samples[0])
     
 
+def test_rot90_coordinates():
+    H,W = [100,100]
+    
+    x    = torch.zeros([H,W])
+    p    = torch.randint(0,100, (2,), )
+    #p    = torch.tensor([ 80,10 ])
+    
+    x[p[1], p[0]] = 1
+    
+    for k in range(4):
+        xrot = torch.rot90(x, k)
+        prot = datalib.rot90_coordinates(p, (H,W), k)
+        print(k, prot, torch.argwhere(xrot).numpy()[0][::-1])
+        assert xrot[prot[1], prot[0]] == 1
+        assert np.allclose(datalib.sample_tensor_at_coordinates(xrot[None,None], prot[None]), 1)
+    
+
+
+def test_adjust_coordinates_for_crop():
+    # Test input
+    c_xy = torch.tensor([[10, 20], [50, 40], [50, 60]], dtype=torch.float32)
+    new_size = (100, 100)
+    cropbox = (20, 20, 60, 40)  # left, top, width, height
+
+    expected_output = torch.tensor([
+        [-16.6667, 0], [50, 50], [50, 100]
+    ])
+
+    output = datalib.adjust_coordinates_for_crop(c_xy, cropbox, new_size)
+
+    assert torch.allclose(output, expected_output)
+
