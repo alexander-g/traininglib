@@ -262,7 +262,7 @@ class PrintMetricsCallback:
         for k, v in newlogs.items():
             self.logs[k] = self.logs.get(k, []) + [v]
     
-    def log_metrics_to_file(self, progress:int|float) -> None:
+    def log_metrics_to_file(self) -> None:
         if self.logfile is None:
             return
         

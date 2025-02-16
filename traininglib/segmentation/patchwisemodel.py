@@ -223,6 +223,7 @@ class PatchedCachingDataset:
             pickle.dumps([self.__dict__, filepairs])
         ).hexdigest()
         cachedir = os.path.join(cachedir, hash)
+        cachedir = os.path.abspath(cachedir)
         return cachedir
 
 
@@ -257,7 +258,7 @@ def slice_and_cache_images(
     for imagefile in imagefiles:
         basename  = os.path.basename(imagefile)
 
-        imagedata = datalib.load_image(imagefile, to_tensor=True)
+        imagedata = datalib.load_image(imagefile, to_tensor=True, normalize=False)
         imagedata = tp.cast(torch.Tensor, imagedata)
         imagedata = datalib.pad_to_minimum_size(imagedata, patchsize)
 
