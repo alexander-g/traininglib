@@ -139,7 +139,7 @@ def random_rotate_flip(
     return output
 
 def write_image(filepath:str, x:np.ndarray, makedirs:bool=True) -> None:
-    assert len(x.shape) == 3 and x.shape[-1] == 3
+    assert (len(x.shape) == 3 and x.shape[-1] == 3) or len(x.shape) == 2, x.shape
     if x.dtype in [np.float32, np.float64]:
         x = (x * 255).astype('uint8')
     
@@ -149,11 +149,11 @@ def write_image(filepath:str, x:np.ndarray, makedirs:bool=True) -> None:
 
 def write_image_tensor(filepath:str, x:torch.Tensor, makedirs:bool=True) -> None:
     assert torch.is_tensor(x)
-    #assert x.dtype == torch.float32
-    #assert x.min() >= 0 and x.max() <= 1
-    assert len(x.shape) == 3 and x.shape[0] == 3
+    assert (len(x.shape) == 3 and x.shape[0] == 3) or len(x.shape) == 2, x.shape
 
-    x_np = x.cpu().detach().numpy().transpose(1,2,0)
+    x_np = x.cpu().detach().numpy()
+    if len(x.shape) == 3:
+        x_np = x_np.transpose(1,2,0)
     return write_image(filepath, x_np, makedirs)
 
 
