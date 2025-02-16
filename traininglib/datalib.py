@@ -354,7 +354,7 @@ def assert_coordinates_within_bounds(c_xy:torch.Tensor, imageshape:tp.Tuple[int,
 def sample_tensor_at_coordinates(
     t:    torch.Tensor, 
     c_xy: torch.Tensor,
-    padding_mode:str|None = None, # zeros, border, reflection
+    padding_mode:tp.Optional[str] = None, # zeros, border, reflection
 ) -> torch.Tensor:
     t_ndim = t.ndim
     c_ndim = c_xy.ndim
@@ -380,7 +380,7 @@ def sample_tensor_at_coordinates(
         c_scaled[:,None], 
         mode          = 'bilinear', 
         align_corners = False,
-        padding_mode  = padding_mode or 'zeros',
+        padding_mode  = padding_mode if padding_mode is not None else 'zeros',
     )[:,:,0]
 
     if t_ndim == 3:
