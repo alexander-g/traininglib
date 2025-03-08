@@ -253,10 +253,16 @@ def paths_from_labeled_skeleton(
 def _linspace_on_tensors(p0:torch.Tensor, p1:torch.Tensor, n:int) -> torch.Tensor:
     '''torch.linspace() but accepts tensors. 
        TODO: already built-in in torch v2.2, remove when upgrading'''
-    assert p0.shape == (2,) and p1.shape == (2,)
+    assert p0.shape == p1.shape
+    assert p0.shape[-1:] == (2,) and p1.shape[-1:] == (2,)
 
+    shape = (n,)+p0.shape
+    p0 = p0.reshape(-1,2)
+    p1 = p1.reshape(-1,2)
+    
     direction = (p1 - p0)
-    return p0 + direction * torch.linspace(0,1, n, device=p0.device)[:,None]
+    flat      = p0 + direction * torch.linspace(0,1, n, device=p0.device)[:,None,None]
+    return flat.reshape(shape)
 
 
 @torch.jit.script_if_tracing
