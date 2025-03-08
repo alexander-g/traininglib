@@ -105,6 +105,7 @@ class PatchwiseTrainingTask(TrainingTask):
         trainsplit:  tp.List,
         valsplit:    tp.List|None = None,
         trainpatchfactor: float = 2,
+        ds_kw:       tp.Dict[str, tp.Any] = {},
         **ld_kw,
     ) -> tp.Tuple[tp.Iterable, tp.Iterable|None]:
         patchsize_train = patchsize_val = None
@@ -113,11 +114,11 @@ class PatchwiseTrainingTask(TrainingTask):
             patchsize_train = self.inputsize * trainpatchfactor
             patchsize_val   = self.inputsize
         
-        ds_train = DatasetClass(trainsplit, patchsize_train)
+        ds_train = DatasetClass(trainsplit, patchsize_train, **ds_kw)
         ld_train = datalib.create_dataloader(ds_train, shuffle=True, **ld_kw)
         ld_val   = None
         if valsplit is not None:
-            ds_val = DatasetClass(valsplit, patchsize_val)
+            ds_val = DatasetClass(valsplit, patchsize_val, **ds_kw)
             ld_val = datalib.create_dataloader(ds_val, shuffle=False, **ld_kw)
         return ld_train, ld_val
 
@@ -150,11 +151,13 @@ class PatchedCachingDataset:
     def __init__(self, 
         filepairs: tp.List[tp.Tuple[str,str]], 
         patchsize: int|None, 
+        scale:     float = 1.0,
         cachedir:  str = './cache/',
     ):
         '''Dataset for image pairs. If `patchsize` is given, 
            will extract and cache patches instead of loading full images'''
         self.filepairs = filepairs
+        self.scale = scale
         if patchsize is not None:
             self.patchsize = patchsize
             filetuples = tp.cast(tp.List[FileTuple], filepairs)
@@ -184,7 +187,7 @@ class PatchedCachingDataset:
 
         cachedir = self._get_concrete_cachedir(filepairs, cachedir)
         if not force:
-            patch_pairs = _load_if_cached(cachedir)
+            patch_pairs = load_if_cached(cachedir)
             if patch_pairs is not None:
                 return patch_pairs, None
         
@@ -202,6 +205,8 @@ class PatchedCachingDataset:
                 files_i,
                 self.patchsize,
                 slack,
+                self.scale,
+                'bilinear' if prefix == 'in' else 'nearest',
             )
             lists_of_cached_files.append(cached_files_i)
 
@@ -227,12 +232,17 @@ class PatchedCachingDataset:
         return cachedir
 
 
-def _load_if_cached(cachedir:str) -> tp.List[FileTuple]|None:
-    cachefile = os.path.join(cachedir, 'cachefile.csv')
+def load_if_cached(
+    cachedir:str, 
+    filename:str = 'cachefile.csv', 
+    n:int = 2,
+    verbose:bool = True
+) -> tp.List[FileTuple]|None:
+    cachefile = os.path.join(cachedir, filename)
     if os.path.exists(cachefile):
-        print('Re-using already cached folder', cachedir)
-        # TODO: hardcoded n=2
-        return datalib.load_file_tuples(cachefile, n=2, delimiter=',')
+        if verbose:
+            print('Re-using already cached folder', cachedir)
+        return datalib.load_file_tuples(cachefile, n=n, delimiter=',')
     return None
 
 
@@ -249,6 +259,9 @@ def slice_and_cache_images(
     imagefiles: tp.List[str], 
     patchsize:  int,
     slack:      int,
+    # scale factor to resize image before slicing (if not 1.0)
+    scale:      float = 1.0,
+    mode:       tp.Literal['nearest', 'bilinear'] = 'nearest'
 ) -> tp.Tuple[tp.List[str], tp.List[np.ndarray]]:
     os.makedirs(directory, exist_ok=True)
     cached_files:tp.List[str] = []
@@ -260,6 +273,10 @@ def slice_and_cache_images(
 
         imagedata = datalib.load_image(imagefile, to_tensor=True, normalize=False)
         imagedata = tp.cast(torch.Tensor, imagedata)
+        if scale != 1.0:
+            H,W = imagedata.shape[-2:]
+            newshape  = ( int(H*scale), int(W*scale) )
+            imagedata = datalib.resize_tensor(imagedata, newshape, mode)
         imagedata = datalib.pad_to_minimum_size(imagedata, patchsize)
 
         grid = datalib.grid_for_patches(imagedata.shape[-2:], patchsize, slack)
