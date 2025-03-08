@@ -48,6 +48,23 @@ def test_connected_components_patchwise():
     assert np.all(b_onnx == b.numpy())
 
 
+def test_connected_components_transitive_closure():
+    adj = torch.tensor([
+        [0, 1, 0, 0, 0, 0],
+        [1, 0, 1, 0, 0, 0],
+        [0, 1, 0, 0, 0, 0],
+        [0, 0, 0, 0, 1, 0],
+        [0, 0, 0, 1, 0, 0],
+        [0, 0, 0, 0, 0, 1],
+    ], dtype=torch.bool)
+
+    fn = torch.jit.script(concom.connected_components_transitive_closure)
+    out = fn(adj)
+    expected = torch.tensor([0,0,0,1,1,2])
+    assert torch.equal(out, expected)
+    assert 0
+
+
 def test_connected_components_actual_bug1():
     a = torch.zeros([1,1,512,512])
     aview = a[..., 373:,293:][...,:10,:10]

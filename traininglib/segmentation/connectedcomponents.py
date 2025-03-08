@@ -1,3 +1,5 @@
+import typing as tp
+
 import torch
 
 
@@ -59,9 +61,44 @@ def connected_components_max_pool(x:torch.Tensor, start:int = 0) -> torch.Tensor
         i += 1
     return labeled.long()
 
+@torch.jit.script_if_tracing
+def connected_components_transitive_closure(adjmat:torch.Tensor) -> torch.Tensor:
+    '''Connected components on an adjacency matrix via mm multiplication'''
+    assert adjmat.dtype == torch.bool and adjmat.ndim == 2
+    n = adjmat.shape[0]
+
+    # iterative transitive closure computation
+    # start with direct reachability (including self)
+    R = adjmat | torch.eye(n, dtype=torch.bool, device=adjmat.device)
+    prev:tp.Optional[torch.Tensor] = None
+    while prev is None or not torch.equal(prev, R):
+        prev = R #.clone()
+        R_f32 = R.to(torch.float32)
+        R = R | ((R_f32 @ R_f32) > 0)
+
+    labels = -torch.ones(n, dtype=torch.int64, device=adjmat.device)
+    label  = 0
+    for i in range(n):
+        if labels[i] == -1:
+            # R contains fully connected components
+            ixs = torch.argwhere(R[i])
+            labels[ixs] = label
+            label += 1
+    return labels
+
+
+def adjacency_list_to_matrix(adjlist:torch.Tensor, n:int) -> torch.Tensor:
+    assert adjlist.ndim == 2
+    assert adjlist.shape[1] == 2
+
+    adjmat = torch.zeros([n,n], dtype=torch.bool, device=adjlist.device)
+    adjmat[adjlist[:,0], adjlist[:,1]] = True
+    return adjmat
+
+
 
 @torch.jit.script_if_tracing
-def connected_components_from_adjacency_list(adjlist:torch.Tensor) -> torch.Tensor:
+def dfs_on_adjacency_list(adjlist:torch.Tensor) -> tp.Dict[str,torch.Tensor]:
     '''Label connected components in a graph, provided in form of an 
        adjacency list, via depth-first search.'''
     assert adjlist.ndim == 2
@@ -74,6 +111,11 @@ def connected_components_from_adjacency_list(adjlist:torch.Tensor) -> torch.Tens
     cnt = 0
     while not torch.all(visited):
         stack = torch.nonzero(~visited)[:1]
+        # points in visited order
+        verts = stack.clone()
+        # the predecessor index for each point in `verts`
+        prev  = torch.ones(len(stack), dtype=torch.int64) * -1
+
         while len(stack):
             index   = stack[-1]
             i,j     = index[0], index[1]
@@ -91,8 +133,17 @@ def connected_components_from_adjacency_list(adjlist:torch.Tensor) -> torch.Tens
             #visited[mask]   = 1 # onnx error
             visited         = visited | mask
 
-            stack = torch.cat([stack[:-1], torch.nonzero(mask)])
-    return relabeled
+            next  = torch.nonzero(mask)
+            stack = torch.cat([stack[:-1], next])
+            #prev  = torch.cat([prev, ... )])
+            verts = torch.cat([verts, index[None]])
+    return {
+        'connectedcomponents': relabeled,
+    }
+
+@torch.jit.script_if_tracing
+def connected_components_from_adjacency_list(adjlist:torch.Tensor) -> torch.Tensor:
+    return dfs_on_adjacency_list(adjlist)['connectedcomponents']
 
 
 @torch.jit.script_if_tracing
