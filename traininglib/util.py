@@ -64,14 +64,16 @@ def prepare_for_training(
 ) -> tp.Tuple[torch.nn.Module, CheckpointPaths]:
     '''Some housekeeping tasks before training starts'''
     destination, name = generate_output_name(args)
-    print('Output directory:', destination)
-    backup_code(destination)
 
     modelpath = os.path.join(destination, name)
     modelpath_tmp = None
     if not args.debug:
+        print('Output directory:', destination)
+        backup_code(destination)
         #save already now and immediately reload
         #to avoid inconsistencies if the source code changes during training
         modelpath_tmp   = model.save(f'{modelpath}.tmp')
         model           = modellib.load_model( modelpath_tmp )
+    else:
+        print('No checkpoint')
     return model, CheckpointPaths(destination, modelpath, modelpath_tmp)
