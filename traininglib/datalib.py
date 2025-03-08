@@ -106,6 +106,7 @@ def random_crop(
     cropfactors:tp.Tuple[float, float] = (0.75, 1.33),
 ) -> tp.List[torch.Tensor]:
     '''Perform random crops on multiple (BCHW) tensors'''
+    # TODO: generate coordinates for every image in batch (not list ofc)
     H,W = x[0].shape[-2:]
     lo  = patchsize * cropfactors[0]
     hi  = patchsize * cropfactors[1]
@@ -140,7 +141,7 @@ def random_rotate_flip(
 
 def write_image(filepath:str, x:np.ndarray, makedirs:bool=True) -> None:
     assert (len(x.shape) == 3 and x.shape[-1] == 3) or len(x.shape) == 2, x.shape
-    if x.dtype in [np.float32, np.float64]:
+    if x.dtype in [np.float32, np.float64, torch.float32]:
         x = (x * 255).astype('uint8')
     
     if makedirs:
@@ -157,11 +158,28 @@ def write_image_tensor(filepath:str, x:torch.Tensor, makedirs:bool=True) -> None
     return write_image(filepath, x_np, makedirs)
 
 
-def pad_to_minimum_size(x:torch.Tensor, minsize:int) -> torch.Tensor:
-    '''If necessary pad the input on the last two dimensions to at least `minsize`'''
+def pad_to_minimum_size(
+    x: torch.Tensor, 
+    minsize: int, 
+    center:  bool=False,
+) -> torch.Tensor:
+    '''If necessary pad the input on the last two dimensions to at least `minsize`
+       If center is True, the original image is centered in the padded output.'''
     assert x.ndim >= 2, x.shape
     H,W = x.shape[-2:]
-    paddings = (0, max(0, minsize-W), 0, max(0, minsize-H))
+    pad_h = max(0, minsize - H)
+    pad_w = max(0, minsize - W)
+    
+    if center:
+        pad_top    = pad_h // 2
+        pad_bottom = pad_h - pad_top
+        pad_left   = pad_w // 2
+        pad_right  = pad_w - pad_left
+    else:
+        pad_top, pad_left = 0, 0
+        pad_bottom, pad_right = pad_h, pad_w
+    
+    paddings = (pad_left, pad_right, pad_top, pad_bottom)
     return torch.nn.functional.pad(x, paddings)
 
 
@@ -232,6 +250,7 @@ def save_file_tuples(filepath:str, filetuples:tp.List[FileTuple], delimiter:str=
 
     lines = []
     for i, tupl in enumerate(filetuples):
+        # TODO: relative path
         lines += [', '.join(tupl)]
     txt = '\n'.join(lines)
     open(filepath, 'w').write(txt)
@@ -271,7 +290,7 @@ def slice_into_patches_from_grid(
     image: torch.Tensor,
     grid:  np.ndarray,
 ) -> tp.List[torch.Tensor]:
-    assert grid.ndim == 3 and grid.shape[-1] == 4
+    assert grid.ndim in [2,3] and grid.shape[-1] == 4
     patches = [image[...,i0:i1, j0:j1] for i0,j0,i1,j1 in grid.reshape(-1, 4)]
     return patches
 
