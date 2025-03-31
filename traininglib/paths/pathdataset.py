@@ -49,7 +49,7 @@ class PatchedPathsDataset(PatchedCachingDataset):
                             for path in pathlist
                 ]
             
-            if self.scale != 1.0:
+            if getattr(self, 'scale', 1.0) != 1.0:
                 components = [c * self.scale for c in components]
 
             for j,coords in enumerate(grid):
