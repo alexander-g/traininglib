@@ -41,7 +41,12 @@ class PatchwiseModel(BaseModel):
         raw = [y.cpu() for y in raw]
 
         if self.patchify:
-            y = datalib.stitch_overlapping_patches(raw, x.shape, self.slack)
+            xshape_padded = (
+                max(x.shape[-2], self.inputsize), 
+                max(x.shape[-1], self.inputsize),
+            )
+            y = datalib.stitch_overlapping_patches(raw, xshape_padded, self.slack)
+            y = y[..., :x.shape[-2], :x.shape[-1]]
         else:
             assert len(raw) == 1, NotImplemented
             y = raw[0]
@@ -205,7 +210,7 @@ class PatchedCachingDataset:
                 files_i,
                 self.patchsize,
                 slack,
-                self.scale,
+                getattr(self, 'scale', 1.0),
                 'bilinear' if prefix == 'in' else 'nearest',
             )
             lists_of_cached_files.append(cached_files_i)
