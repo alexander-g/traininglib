@@ -72,7 +72,6 @@ def convert_lines_to_pixelcoords(
        - If `round`, will round points to an integer
     '''
     assert lines.ndim == 3 and lines.shape[1] == 2 and lines.shape[2] == 2, lines.shape
-    assert offset == 0, NotImplemented
 
     lines   = lines.float()
     indices = torch.arange(len(lines), device=lines.device)
@@ -103,16 +102,16 @@ def convert_lines_to_pixelcoords(
         line_indices = line_indices * torch.arange(B)[None] + j
         j += B
 
-        # TODO:
-    #     if offset != 0:
-    #         linevector  = p1 - p0
-    #         normal      = normal_of_line(linevector, unitlength=True)
-    #         line_points = line_points + normal * offset
+        if offset != 0:
+            linevector  = (p1 - p0)[mask]
+            normal      = normal_of_line(linevector, unitlength=True)
+            line_points = line_points + normal * offset
 
         all_points_.append(line_points.reshape(-1,2))
         all_indices_.append(line_indices.reshape(-1))
     
     all_points  = torch.cat(all_points_)
+    # TODO: indices is incorrect
     all_indices = torch.cat(all_indices_)
     
     if size is not None:
@@ -180,6 +179,8 @@ def path_to_lines(path:torch.Tensor) -> torch.Tensor:
     return torch.stack( [path[:-1], path[1:]], dim=1 )
 
 def paths_to_lines(paths:tp.List[torch.Tensor]) -> torch.Tensor:
+    '''Convert a list of paths to lines in a single tensor.
+       NOTE: user has to make sure input is not empty. '''
     return torch.cat([path_to_lines(p) for p in paths])
 
 def are_lines_within_bounds(lines:torch.Tensor, size:IntOrSize) -> torch.Tensor:
