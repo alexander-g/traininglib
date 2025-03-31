@@ -184,3 +184,23 @@ def test_adjust_coordinates_for_crop():
 
     assert torch.allclose(output, expected_output)
 
+
+def test_faster_unique_dim0():
+    fn = torch.jit.script(datalib.faster_unique_dim0)
+    x = torch.tensor([
+        [0,1], [0,2], [0,3], [0,4], [0,1],
+        [1,2], [1,3], [1,5], [1,2], [2,3], [2,4], [2,4]
+    ])
+    out = fn(x)
+    expected = torch.tensor([
+        [0,1], [0,2], [0,3], [0,4],
+        [1,2], [1,3], [1,5],        [2,3], [2,4],
+    ])
+    assert (out == expected).all()
+
+    fn2 = torch.jit.script(datalib.faster_unique_dim0_with_counts)
+    out2, cnts = fn2(x)
+    assert (out2 == out).all()
+    expected_cnts = torch.tensor([2,1,1,1,2,1,1,1,2])
+    assert (cnts == expected_cnts).all()
+

@@ -461,3 +461,36 @@ def adjust_coordinates_for_crop(
     ], dim=-1)
     return new_c_xy
 
+
+
+
+def __unique_and_indices_for_faster_unique(x:torch.Tensor):
+    assert x.ndim == 2 and x.shape[-1] == 2
+    if len(x) == 0:
+        return x, torch.empty([0], dtype=torch.int64, device=x.device)
+    
+    x1_max = x[:,1].max()
+    # hashing values
+    y = x[:,0] * (x1_max + 1) + x[:,1]
+    _, unique_indices = torch.unique(y, return_inverse=True)
+    q = torch.empty(
+        [int(unique_indices.max()+1), 2], 
+        dtype  = x.dtype, 
+        device = x.device,
+    )
+    q[unique_indices] = x
+    return q, unique_indices
+
+@torch.jit.script_if_tracing
+def faster_unique_dim0(x:torch.Tensor) -> torch.Tensor:
+    '''A faster torch.unique(x, dim=0) for x.shape == [N,2]'''
+    q, _ = __unique_and_indices_for_faster_unique(x)
+    return q
+
+@torch.jit.script_if_tracing
+def faster_unique_dim0_with_counts(x:torch.Tensor) \
+    -> tp.Tuple[torch.Tensor, torch.Tensor]:
+    '''A faster torch.unique(x, dim=0, return_counts=True) for x.shape == [N,2]'''
+    q, indices = __unique_and_indices_for_faster_unique(x)
+    counts = torch.bincount(indices, minlength=q.shape[0])
+    return q, counts
