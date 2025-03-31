@@ -25,14 +25,15 @@ def create_dataloader(
     **kw
 ) -> torch.utils.data.DataLoader:
     if num_workers == 'auto':
-        num_workers = os.cpu_count() or 1
+        num_workers = min(os.cpu_count() or 1, batch_size)
     return torch.utils.data.DataLoader(
         dataset, 
         batch_size, 
         shuffle, 
         collate_fn      = getattr(dataset, 'collate_fn', None),
         num_workers     = num_workers, 
-        pin_memory      = True,
+        pin_memory      = False, # getting out-of-memory sometimes if True
+        #persistent_workers = True,
         worker_init_fn  = lambda x: np.random.seed(torch.randint(0,1000,(1,))[0].item()+x),
         **kw
     )
