@@ -22,15 +22,21 @@ class BaseModel(torch.nn.Module):
         y  = self.postprocess(y, x0)
         return y
     
-    def process_image(self, image: str | np.ndarray) -> tp.Any:
+    def process_image(
+        self, 
+        image:str|np.ndarray, 
+        progress_callback:tp.Optional[tp.Callable] = None
+    ) -> tp.Any:
         """Full inference pipeline for a single image, from file to result."""
         self.eval()
 
         x_batches, x0 = self.prepare_image(image)
         with torch.no_grad():
             y_batches: tp.List[torch.Tensor] = []
-            for batch in x_batches:
+            for i, batch in enumerate(x_batches):
                 y_batches += [self(batch)]
+                if callable(progress_callback):
+                    progress_callback( (i+1) / len(x_batches) )
         y = self.finalize_inference(y_batches, x0)
         return y
     
