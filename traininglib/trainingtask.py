@@ -265,6 +265,10 @@ class PrintMetricsCallback:
     def log_metrics_to_file(self) -> None:
         if self.logfile is None:
             return
+        logdir = os.path.dirname(self.logfile)
+        if not os.path.exists(logdir):
+            # no checkpointdir because of --debug
+            return
         
         print_str = self.format_metrics_string(self.epoch)
         open(self.logfile, 'a').write(print_str + '\n')
