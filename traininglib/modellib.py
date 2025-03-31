@@ -179,7 +179,7 @@ def start_training_from_cli_args(
 def load_model(filename:str) -> BaseModel:
     '''Load a self-contained torch.package from file as saved with .save() above'''
     assert os.path.exists(filename), filename
-    return torch.package.PackageImporter(filename).load_pickle('model', 'model.pkl')
+    return torch.package.PackageImporter(filename).load_pickle('model', 'model.pkl', map_location='cpu')
 
 def load_weights(filepath:str, model:torch.nn.Module) -> None:
     if filepath.endswith('.pt.zip'):
