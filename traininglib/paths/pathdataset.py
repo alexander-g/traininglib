@@ -38,6 +38,8 @@ class PatchedPathsDataset(PatchedCachingDataset):
         svg_items = []
         for i,grid in enumerate(grids):
             parsed = svg.parse_svg(svgfiles[i])
+            assert parsed.size == tuple(grid[-1][-2:][::-1]), \
+                'Image and annotation have different sizes'
             if self.first_component_only:
                 # only using the first component (the main root)
                 components = [np.array(pathlist[0]) for pathlist in parsed.paths]
