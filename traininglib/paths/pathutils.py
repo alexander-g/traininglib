@@ -60,7 +60,7 @@ def normal_of_line(line:torch.Tensor, unitlength:bool = False) -> torch.Tensor:
 @torch.jit.script_if_tracing
 def convert_lines_to_pixelcoords(
     lines:  torch.Tensor, 
-    size:   int|None,
+    size:   tp.Optional[IntOrSize],
     offset: float = 0.0,
     round:  bool  = True,
     stepfactor: float = DEFAULT_STEPFACTOR,
@@ -84,7 +84,7 @@ def convert_lines_to_pixelcoords(
     p0 = lines[:,0]
     p1 = lines[:,1]
     d  = elementwise_distance(p0, p1, -1)
-    n_points = torch.maximum(torch.tensor(2), (d*stepfactor).long())
+    n_points = torch.maximum(torch.tensor(2), (d*stepfactor).ceil().long())
 
     j = 0
     all_points_  = [torch.empty_like(lines.reshape(-1,2)[:0])]
@@ -98,7 +98,8 @@ def convert_lines_to_pixelcoords(
         if round:
             line_points = line_points.round()
         
-        line_indices = torch.ones([n,B], device=lines.device, dtype=torch.long)
+        line_indices = \
+            torch.ones([int(n),int(B)], device=lines.device, dtype=torch.long)
         line_indices = line_indices * torch.arange(B)[None] + j
         j += B
 
@@ -297,6 +298,48 @@ def decode_paths(paths:torch.Tensor, n_batches:int) -> tp.List[tp.List[torch.Ten
     return all_paths_list
 
 
+# def resample_path_component_at_segment_lengths(
+#     component: torch.Tensor, 
+#     lengths:   torch.Tensor,
+# ) -> torch.Tensor:
+#     '''Resample a path component so that the lengths of individual segments 
+#        are as specified in `steps`. Lossy.'''
+#     assert lengths.ndim == 1 and torch.all(lengths >= 0.0)
+#     assert component.ndim == 2 and component.shape[1] == 2
+
+#     if len(component) == 0:
+#         return torch.empty_like(component)
+
+#     segment_lengths = path_segment_lengths(component)
+#     t_old = torch.cat([
+#         torch.zeros(1, device=component.device), 
+#         torch.cumsum(segment_lengths, 0)
+#     ])
+#     t_new = torch.cumsum(lengths, 0)
+#     #assert torch.abs(t_new[-1] - t_old[-1]) < 1e-3, (t_new[-1], t_old[-1])
+
+#     i = 0
+#     t_now = torch.tensor(0.0)
+#     p_now = component[0]
+#     component_new = [torch.as_tensor(p_now)]
+#     for t_next in t_new[1:]:
+#         p_now = component_new[-1]
+#         while 1:
+#             t_remainder = t_old[i+1] - t_now
+#             if t_next - t_old[i+1] < 0.01:
+#                 direction = component[i+1] - component[i]
+#                 direction = direction / segment_lengths[i] # * t_remainder
+#                 p_now     = p_now + direction * (t_next - t_now)
+#                 component_new.append(p_now)
+#                 t_now = t_next
+#                 break
+#             else:
+#                 t_now = t_old[i+1]
+#                 p_now = component[i+1]
+#                 i += 1
+#     return torch.stack(component_new)
+
+
 def resample_path_component_at_segment_lengths(
     component: torch.Tensor, 
     lengths:   torch.Tensor,
@@ -315,27 +358,17 @@ def resample_path_component_at_segment_lengths(
         torch.cumsum(segment_lengths, 0)
     ])
     t_new = torch.cumsum(lengths, 0)
-    #assert torch.abs(t_new[-1] - t_old[-1]) < 1e-3, (t_new[-1], t_old[-1])
 
-    i = 0
-    t_now = torch.tensor(0.0)
-    p_now = component[0]
-    component_new = torch.as_tensor(p_now)[None]
-    for t_next in t_new[1:]:
-        p_now = component_new[-1]
-        while 1:
-            t_remainder = t_old[i+1] - t_now
-            if t_next - t_old[i+1] < 0.01:
-                direction = component[i+1] - component[i]
-                direction = direction / segment_lengths[i] # * t_remainder
-                p_now     = p_now + direction * (t_next - t_now)
-                component_new = torch.cat([component_new, p_now[None]])
-                t_now = t_next
-                break
-            else:
-                t_now = t_old[i+1]
-                p_now = component[i+1]
-                i += 1
+    indices = torch.searchsorted(t_old, t_new, right=True) - 1
+    indices = torch.clamp(indices, 0, len(component)-2)
+    t_start = t_old[indices]
+    t_end   = t_old[indices + 1]
+    dt = t_end - t_start
+    weights = torch.where(dt > 0, (t_new - t_start) / dt, torch.zeros_like(dt))
+    p_start = component[indices]
+    p_end   = component[indices + 1]
+    component_new = p_start + (p_end - p_start) * weights.unsqueeze(1)
+
     return component_new
 
 def resample_path_component(component:torch.Tensor, n:int) -> torch.Tensor:
@@ -359,6 +392,8 @@ def resample_path_component_at_interval(
 
     total_length = path_component_length(component)
     t_new = torch.arange(0, total_length, interval).to(component.device)
+    if len(t_new) == 0:
+        return component
     if (total_length - t_new[-1]) > last_point_threshold:
         t_new = torch.cat([t_new, torch.as_tensor(total_length)[None].to(t_new.device) ])
     t_delta = torch.cat([torch.zeros(1).to(t_new.device), torch.diff(t_new)])
