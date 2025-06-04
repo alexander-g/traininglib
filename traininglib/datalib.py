@@ -220,7 +220,9 @@ def load_file_tuples(filepath:str, delimiter:str, n:int) -> tp.List[FileTuple]:
         #convert relative paths to absolute, starting from the textfile directory
         pair = [f if os.path.isabs(f) else os.path.join(dirname, f) for f in pair]
         if not all(os.path.exists(p) for p in pair):
-            raise Exception(f'Files not found: {pair}')
+            raise Exception(
+                f'Files not found: {[f for f in pair if not os.path.exists(f)]}'
+            )
         pairs.append(tuple(pair))
     return pairs
 
