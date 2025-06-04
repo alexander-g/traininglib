@@ -19,12 +19,12 @@ class PatchedPathsDataset(PatchedCachingDataset):
         self.first_component_only = first_component_only
         super().__init__(*a, **kw)
 
-    def _cache(self, filepairs, cachedir):
+    def _cache(self, filepairs, cachedir, **kw):
         #inputfiles = [imf for imf,_ in filepairs]
         svgfiles   = [anf for _,anf in filepairs]
 
         cached_filepairs, grids = \
-            super()._cache(filepairs, prefixes=['in'], cachedir=cachedir)
+            super()._cache(filepairs, prefixes=['in'], cachedir=cachedir, **kw)
         if grids is None:
             #cached
             assert len(cached_filepairs[0]) == 2
@@ -35,11 +35,27 @@ class PatchedPathsDataset(PatchedCachingDataset):
         cachedir = os.path.dirname(cached_inputfiles[0].replace('/in/','/an/'))
         os.makedirs(cachedir, exist_ok=True)
 
+        svg_items = self._cache_svgpathfiles(svgfiles, grids, cachedir)
+        assert len(svg_items) == len(cached_inputfiles)
+        cached_inputfiles = [os.path.abspath(p) for p in cached_inputfiles]
+        svg_items = [os.path.abspath(p) for p in svg_items]
+        new_filepairs = list(zip(cached_inputfiles, svg_items))
+
+        cachefile = os.path.join(cachedir, '..', 'cachefile.csv')
+        datalib.save_file_tuples(cachefile, new_filepairs)
+        return new_filepairs, grids
+
+    def _cache_svgpathfiles(
+        self, 
+        svgfiles: tp.List[str], 
+        grids:    tp.List[np.ndarray],
+        cachedir: str,
+    ) -> tp.List[str]:
         svg_items = []
         for i,grid in enumerate(grids):
             parsed = svg.parse_svg(svgfiles[i])
             assert parsed.size == tuple(grid[-1][-2:][::-1]), \
-                'Image and annotation have different sizes'
+                f'Image and annotation have different sizes: {svgfiles[i]}'
             if self.first_component_only:
                 # only using the first component (the main root)
                 components = [np.array(pathlist[0]) for pathlist in parsed.paths]
@@ -74,21 +90,12 @@ class PatchedPathsDataset(PatchedCachingDataset):
                 )
                 open(svg_dst, 'w').write(svg_str)
                 svg_items.append(svg_dst)
-        
-
-        assert len(svg_items) == len(cached_inputfiles)
-        cached_inputfiles = [os.path.abspath(p) for p in cached_inputfiles]
-        svg_items = [os.path.abspath(p) for p in svg_items]
-        new_filepairs = list(zip(cached_inputfiles, svg_items))
-
-        cachefile = os.path.join(cachedir, '..', 'cachefile.csv')
-        datalib.save_file_tuples(cachefile, new_filepairs)
-        return new_filepairs, grids
+        return svg_items
 
     def __getitem__(self, i:int) -> tp.Tuple[torch.Tensor, tp.List[torch.Tensor]]:
         inputfile, svgfile = self.filepairs[i]
         inputdata = datalib.load_image(inputfile, to_tensor=True)
-        parsed    = svg.parse_svg(svgfile)
+        parsed    = svg.parse_svg(svgfile) # TODO: get rid of svg loading
         if self.first_component_only:
             components = [np.array(pathlist[0]) for pathlist in parsed.paths]
         else:
