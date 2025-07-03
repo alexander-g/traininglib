@@ -390,6 +390,7 @@ def resample_path_component_at_interval(
        away from the n-1 point.'''
     assert component.ndim == 2 and component.shape[1] == 2
 
+    interval = float(interval)
     total_length = path_component_length(component)
     t_new = torch.arange(0, total_length, interval).to(component.device)
     if len(t_new) == 0:

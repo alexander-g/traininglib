@@ -34,6 +34,15 @@ def test_resample_path_component():
     assert torch.all(p_new[1:,0] == p_new[1:,1])
 
 
+def test_resample_path_component_at_interval():
+    p = torch.as_tensor([]).reshape(-1,2)
+    # actual bug
+    interval = torch.rand(1) * 10
+    #dont fail
+    utils.resample_path_component_at_interval(p, interval=interval, last_point_threshold=3)
+
+
+
 def test_filter_out_of_bounds_lines():
     lines = torch.as_tensor([
         [[-20,-20],[-10,-10]], # yes filter out
