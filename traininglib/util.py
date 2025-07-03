@@ -28,9 +28,10 @@ def collect_loaded_non_venv_modules() -> tp.List[str]:
             continue
         
         if (
-            not modulefile.startswith(sys.prefix)            #venv
-            and not modulefile.startswith(sys.base_prefix)   #builtins
-            and not 'site-packages' in modulefile            #more venv
+            not modulefile.startswith(sys.prefix)            # venv
+            and not modulefile.startswith(sys.base_prefix)   # builtins
+            and not 'site-packages' in modulefile            # more venv
+            and not name.startswith('torch.')                # pytorch is annoying
         ):
             modules.append(name)
     return modules
@@ -42,6 +43,8 @@ def backup_code(destination:str) -> str:
     srcmods  = collect_loaded_non_venv_modules()
     for src_m in srcmods:
         src_f = sys.modules[src_m].__file__
+        if src_f is None:
+            continue
         src_f = os.path.realpath(src_f)
         dst_f = os.path.join(destination, 'code', src_m + '.py')
         os.makedirs(os.path.dirname(dst_f), exist_ok=True)
@@ -59,12 +62,11 @@ class CheckpointPaths(tp.NamedTuple):
     modelpath_tmp: str|None
 
 def prepare_for_training(
-    model:  'modellib.BaseModel', 
+    model:  'modellib.SaveableModule',  # needs to be a string
     args:   argparse.Namespace, 
 ) -> tp.Tuple[torch.nn.Module, CheckpointPaths]:
     '''Some housekeeping tasks before training starts'''
     destination, name = generate_output_name(args)
-
     modelpath = os.path.join(destination, name)
     modelpath_tmp = None
     if not args.debug:
@@ -72,8 +74,8 @@ def prepare_for_training(
         backup_code(destination)
         #save already now and immediately reload
         #to avoid inconsistencies if the source code changes during training
-        modelpath_tmp   = model.save(f'{modelpath}.tmp')
-        model           = modellib.load_model( modelpath_tmp )
+        modelpath_tmp = model.save(f'{modelpath}.tmp')
+        model         = modellib.load_model( modelpath_tmp )
     else:
         print('No checkpoint')
     return model, CheckpointPaths(destination, modelpath, modelpath_tmp)

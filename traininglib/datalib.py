@@ -496,3 +496,17 @@ def faster_unique_dim0_with_counts(x:torch.Tensor) \
     q, indices = __unique_and_indices_for_faster_unique(x)
     counts = torch.bincount(indices, minlength=q.shape[0])
     return q, counts
+
+
+def _linspace_on_tensors(p0:torch.Tensor, p1:torch.Tensor, n:int) -> torch.Tensor:
+    '''torch.linspace() but accepts tensors'''
+    assert p0.shape == p1.shape
+    assert p0.shape[-1:] == (2,) and p1.shape[-1:] == (2,)
+
+    shape = (n,)+p0.shape
+    p0 = p0.reshape(-1,2)
+    p1 = p1.reshape(-1,2)
+    
+    direction = (p1 - p0)
+    flat      = p0 + direction * torch.linspace(0,1, n, device=p0.device)[:,None,None]
+    return flat.reshape(shape)

@@ -215,7 +215,15 @@ class TrainingTask(torch.nn.Module):
         cls.stop_requested = True
 
 
-class PrintMetricsCallback:
+
+class Callback:
+    def on_epoch_end(self, epoch:int) -> None:
+        raise NotImplementedError
+    
+    def on_batch_end(self, logs:tp.Dict, batch_i:int, n_batches:int) -> None:
+        raise NotImplementedError
+
+class PrintMetricsCallback(Callback):
     """Prints metrics after each training epoch in a compact table"""
 
     def __init__(self, logfile:tp.Optional[str] = None):
@@ -274,7 +282,7 @@ class PrintMetricsCallback:
         open(self.logfile, 'a').write(print_str + '\n')
 
 
-class TrainingProgressCallback:
+class TrainingProgressCallback(Callback):
     """Passes training progress as percentage to a custom callback function"""
 
     def __init__(self, callback_fn, epochs):
