@@ -61,6 +61,53 @@ def connected_components_max_pool(x:torch.Tensor, start:int = 0) -> torch.Tensor
         i += 1
     return labeled.long()
 
+
+@torch.jit.script_if_tracing
+def connected_components_indexed(x:torch.Tensor, start:int = 1) -> torch.Tensor:
+    '''Connected components algorithm'''
+    assert x.dtype == torch.bool
+    assert x.ndim == 2
+
+    # pad borders
+    x = x.to(torch.int64)
+    x = torch.nn.functional.pad(x, [1, 1, 1, 1])
+
+    # [N,2]
+    indices = torch.argwhere(x)
+    labels  = torch.arange(start, len(indices)+start, device=x.device)
+    
+    x[indices[...,0], indices[...,1]] = labels
+
+    # [9,2]
+    offsets = torch.tensor([
+        [ 0, 0],
+        [-1, 0],
+        [-1, 1],
+        [ 0, 1],
+        [ 1, 1],
+        [ 1, 0],
+        [ 1,-1],
+        [ 0,-1],
+        [-1,-1],
+    ], device=x.device)
+    # [N,9,2]
+    offset_indices = indices[:,None,:] + offsets[None,:,:]
+
+    prev_labels = x[indices[...,0], indices[...,1]]
+    while 1:
+        offset_labels = x[offset_indices[...,0], offset_indices[...,1]]
+        new_labels = offset_labels.max(dim=1).values
+        if torch.all(prev_labels == new_labels):
+            break
+        x[indices[...,0], indices[...,1]] = new_labels
+        prev_labels = new_labels
+    
+    # remove padding
+    x = x[1:-1, 1:-1]
+    return x
+
+
+
 @torch.jit.script_if_tracing
 def connected_components_transitive_closure(adjmat:torch.Tensor) -> torch.Tensor:
     '''Connected components on an adjacency matrix via mm multiplication'''
@@ -125,7 +172,7 @@ def dfs_on_adjacency_list(adjlist:torch.Tensor) -> tp.Dict[str,torch.Tensor]:
             label_j = relabeled[i, not_j].clone()
 
             relabeled[i, :] = label_i.repeat(2)
-            visited[i, :]   = torch.tensor([True,True])
+            visited[i, :]   = torch.tensor([True,True], device=visited.device)
             mask            = ((relabeled==label_j) | (relabeled==label_i))
             mask            = mask & ~visited
             #relabeled[mask] = label_i # onnx error
@@ -157,10 +204,12 @@ def _relabel(
     for i in uniques:
         equivalent_labels = adjacency_list[(adjacency_labels == i)].reshape(-1)
         # NOTE: torch.isin() is not exportable to onnx
-        # mask = torch.isin(labelmap, equivalent_labels)
-        for l in equivalent_labels:
-            mask = (labelmap == l)
-            new_labelmap = torch.where(mask, i, new_labelmap)
+        mask = torch.isin(labelmap, equivalent_labels)
+        new_labelmap = torch.where(mask, i, new_labelmap)
+        #new_labelmap[mask] = i
+        # for l in equivalent_labels:
+        #     mask = (labelmap == l)
+        #     new_labelmap = torch.where(mask, i, new_labelmap)
     return new_labelmap
 
 @torch.jit.script_if_tracing
@@ -195,7 +244,8 @@ def connected_components_patchwise(x:torch.Tensor, patchsize:int) -> torch.Tenso
     for i in range(0, H, patchsize):
         for j in range(0, W, patchsize):
             xpatch = x[..., i:, j:][..., :patchsize, :patchsize]
-            ypatch = connected_components_max_pool(xpatch, start=nel)
+            #ypatch = connected_components_max_pool(xpatch, start=nel)
+            ypatch = connected_components_indexed(xpatch[0,0], start=nel)[None,None]
             # NOTE: onnx doesnt like this
             #y[...,i:, j:][..., :patchsize, :patchsize] = ypatch.to(y.dtype)
             y[..., i:i+patchsize, j:j+patchsize] = ypatch.to(y.dtype)

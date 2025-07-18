@@ -86,6 +86,61 @@ def skeletonize(x:torch.Tensor) -> torch.Tensor:
     return x
 
 
+@torch.jit.script_if_tracing
+def skeletonize_indexed(x:torch.Tensor) -> torch.Tensor:
+    '''Skeletonization as in https://doi.org/10.1145/35799'''
+    assert x.ndim == 2 and x.dtype == torch.bool
+    x = torch.nn.functional.pad(x, (1,1, 1,1))
+
+    # [98,2]
+    offsets = torch.tensor([
+        #[ 0, 0],
+        [-1, 0],  # P2
+        [-1, 1],  # P3
+        [ 0, 1],  # P4
+        [ 1, 1],  # P5
+        [ 1, 0],  # P6
+        [ 1,-1],  # P7
+        [ 0,-1],  # P8
+        [-1,-1],  # P9
+    ], device=x.device)
+
+    condition = True
+    while condition:
+        # subiteration 1
+        indices = torch.argwhere(x)
+        # [N,8,2]
+        offset_indices = indices[:,None,:] + offsets[None,:,:]
+        # [8,9]
+        P = x[offset_indices[...,0], offset_indices[...,1]]
+        mask_0 = condition_a(P) & condition_b(P) & condition_c0(P) & condition_d0(P)
+
+        bad_indices_0 = indices[mask_0[:,0]]
+        x[bad_indices_0[...,0], bad_indices_0[...,1]] = 0
+
+
+
+        # subiteration 2
+        indices = torch.argwhere(x)
+        # [N,8,2]
+        offset_indices = indices[:,None,:] + offsets[None,:,:]
+        # [N,8]
+        P = x[offset_indices[...,0], offset_indices[...,1]]
+        mask_1 = condition_a(P) & condition_b(P) & condition_c1(P) & condition_d1(P)
+
+        bad_indices_1 = indices[mask_1[:,0]]
+        x[bad_indices_1[...,0], bad_indices_1[...,1]] = 0
+
+
+
+        condition = len(bad_indices_0) > 0 or len(bad_indices_1) > 0
+
+    # remove padding
+    x = x[1:-1, 1:-1]
+
+    return x
+
+
 
 
 @torch.jit.script_if_tracing
@@ -282,9 +337,10 @@ def rdp(path:torch.Tensor, epsilon:float) -> torch.Tensor:
         p1 = segment[-1]
 
         #redneck point-to-line distance
-        #TODO redo this properly
+        # TODO redo this properly
         #linepoints = torch.linspace(p0, p1, n)
         linepoints = _linspace_on_tensors(p0, p1, n)
+        # TODO: torch.cdist
         distances  = ((segment - linepoints)**2).sum(-1)**0.5
         
         k = distances.argmax()

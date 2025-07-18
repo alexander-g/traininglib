@@ -34,7 +34,7 @@ def train_one_epoch(
 
         batch = next(loader_it)
         with torch.autocast("cuda", enabled=amp):
-            loss, logs = training_step(batch)
+            loss, logs = training_step.train()(batch)
         logs["lr"] = optimizer.param_groups[0]["lr"]
 
         if scaler is not None:
@@ -161,13 +161,14 @@ def start_training_from_cli_args(
     args:          argparse.Namespace,
     train_step:    modellib.SaveableModule,
     train_dataset: tp.Iterable,
+    ld_kw:         tp.Dict[str, tp.Any] = {},
 ):
     train_step, paths = util.prepare_for_training(train_step, args) # type: ignore
-    train_step.save(paths.modelpath)
     ld:tp.Sequence = datalib.create_dataloader( # type: ignore
         train_dataset, 
         batch_size = args.batchsize,
         shuffle    = True,
+        **ld_kw
     )
 
     train(train_step, ld, args.epochs, checkpoint_dir=paths.checkpointdir)
@@ -175,5 +176,6 @@ def start_training_from_cli_args(
     train_step.save(paths.modelpath)
     if paths.modelpath_tmp is not None:
         os.remove(paths.modelpath_tmp)
+    return train_step, paths
 
 

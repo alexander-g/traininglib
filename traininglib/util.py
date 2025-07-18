@@ -75,7 +75,7 @@ def prepare_for_training(
         #save already now and immediately reload
         #to avoid inconsistencies if the source code changes during training
         modelpath_tmp = model.save(f'{modelpath}.tmp')
-        model         = modellib.load_model( modelpath_tmp )
+        model         = modellib.load_model( modelpath_tmp ).train()
     else:
         print('No checkpoint')
     return model, CheckpointPaths(destination, modelpath, modelpath_tmp)

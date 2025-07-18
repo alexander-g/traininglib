@@ -8,7 +8,45 @@ import torch, torchvision
 from . import datalib, util
 
 
-class BaseModel(torch.nn.Module):
+
+class SaveableModule(torch.nn.Module):
+    def save(self, destination: str) -> str:
+        """Save a model as a self-contained torch.package including source code."""
+        if isinstance(destination, str):
+            destination = time.strftime(destination)
+            if not destination.endswith(".pt.zip"):
+                destination += ".pt.zip"
+        os.makedirs(os.path.dirname(destination) or ".", exist_ok=True)
+
+        try:
+            import torch_package_importer as imp
+
+            # re-export
+            importer: tp.Any = (imp, torch.package.sys_importer)
+        except ImportError as e:
+            # first export
+            importer = (torch.package.sys_importer,)
+
+        with torch.package.PackageExporter(destination, importer) as pe:
+            # save all python files in src folder
+            interns = util.collect_loaded_non_venv_modules()
+            pe.intern(interns)
+            pe.extern("**", exclude=["torchvision.**"])
+            externs = [
+                "torchvision.ops.**",
+                "torchvision.datasets.**",
+                "torchvision.io.**",
+                "torchvision._meta_registrations",
+            ]
+            pe.intern("torchvision.**", exclude=externs)
+            pe.extern(externs)
+
+            pe.save_pickle("model", "model.pkl", self.cpu().eval())
+            # pe.save_text('model', 'class_list.txt', '\n'.join(self.class_list))
+        return destination
+
+
+class BaseModel(SaveableModule):
     def __init__(self, module:torch.nn.Module, inputsize:int):
         super().__init__()
 
@@ -82,40 +120,6 @@ class BaseModel(torch.nn.Module):
         except StopIteration:
             return torch.float32
     
-    def save(self, destination: str) -> str:
-        """Save a model as a self-contained torch.package including source code."""
-        if isinstance(destination, str):
-            destination = time.strftime(destination)
-            if not destination.endswith(".pt.zip"):
-                destination += ".pt.zip"
-        os.makedirs(os.path.dirname(destination) or ".", exist_ok=True)
-
-        try:
-            import torch_package_importer as imp
-
-            # re-export
-            importer: tp.Any = (imp, torch.package.sys_importer)
-        except ImportError as e:
-            # first export
-            importer = (torch.package.sys_importer,)
-
-        with torch.package.PackageExporter(destination, importer) as pe:
-            # save all python files in src folder
-            interns = util.collect_loaded_non_venv_modules()
-            pe.intern(interns)
-            pe.extern("**", exclude=["torchvision.**"])
-            externs = [
-                "torchvision.ops.**",
-                "torchvision.datasets.**",
-                "torchvision.io.**",
-                "torchvision._meta_registrations",
-            ]
-            pe.intern("torchvision.**", exclude=externs)
-            pe.extern(externs)
-
-            pe.save_pickle("model", "model.pkl", self.cpu().eval())
-            # pe.save_text('model', 'class_list.txt', '\n'.join(self.class_list))
-        return destination
     
     def _start_training(
         self,

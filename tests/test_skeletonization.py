@@ -1,5 +1,5 @@
 import traininglib.segmentation.skeletonization as skel
-from util import _export_to_onnx
+#from util import _export_to_onnx
 
 import torch
 
@@ -19,6 +19,21 @@ def test_skeletonization():
 
     session = _export_to_onnx(skeletonize)
     session.run(None, {'x':x.numpy()})
+
+
+def test_skeletonization_indexed():
+    skeletonize = torch.jit.script(skel.skeletonize_indexed)
+    
+    x = torch.zeros([100,100]).bool()
+    x[..., 5:10,   5:90] = 1
+    x[..., 15:20, 20:70] = 1
+
+    x_sk = skeletonize(x)
+
+    assert torch.all(x_sk[:7,   :  ] == 0)
+    assert torch.all(x_sk[7,   7:87] == 1)
+    assert torch.all(x_sk[8:10, :  ] == 0)
+
 
 
 

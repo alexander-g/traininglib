@@ -6,7 +6,6 @@ import io
 import os
 import tempfile
 
-import onnxruntime as ort
 import torch
 import numpy as np
 
@@ -19,6 +18,17 @@ def test_connected_components():
     a[..., 50:90, 30:100] = 1
 
     b = concom.connected_components_max_pool(a.bool())
+    assert b.shape == a.shape
+    assert len(torch.unique(b)) == 4   # 3x blobs + zero
+
+def test_connected_components_indexed():
+    a = torch.zeros([444,333])
+    a[..., 5:15, 10:300] = 1
+    a[..., 40:45, 20:70] = 1
+    a[..., 50:90, 30:100] = 1
+
+    fn = torch.jit.script(concom.connected_components_indexed)
+    b = fn(a.bool())
     assert b.shape == a.shape
     assert len(torch.unique(b)) == 4   # 3x blobs + zero
 
