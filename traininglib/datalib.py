@@ -6,6 +6,8 @@ import torch, torchvision
 import PIL.Image
 PIL.Image.MAX_IMAGE_PIXELS = None
 
+from .dataloader import ThreadedDataLoader
+
 
 FilePair   = tp.Tuple[str,str]
 FileTriple = tp.Tuple[str,str,str]
@@ -22,22 +24,39 @@ def create_dataloader(
     batch_size: int, 
     shuffle:    bool=False, 
     num_workers:int|tp.Literal['auto'] = 'auto', 
+    loader_type:tp.Literal['torch', 'threaded'] = 'torch',
     **kw
 ) -> torch.utils.data.DataLoader:
+    assert loader_type in ['torch', 'threaded']
+
     if num_workers == 'auto':
         num_workers = min(os.cpu_count() or 1, batch_size)
-    return torch.utils.data.DataLoader(
-        dataset, 
-        batch_size, 
-        shuffle, 
-        collate_fn      = getattr(dataset, 'collate_fn', None),
-        num_workers     = num_workers, 
-        pin_memory      = False, # getting out-of-memory sometimes if True
-        #persistent_workers = True,
-        worker_init_fn  = lambda x: np.random.seed(torch.randint(0,1000,(1,))[0].item()+x),
-        **kw
-    )
+    
+    collate_fn = getattr(dataset, 'collate_fn', None)
 
+    if loader_type == 'torch':
+        return torch.utils.data.DataLoader(
+            dataset, 
+            batch_size, 
+            shuffle, 
+            collate_fn      = collate_fn,
+            num_workers     = num_workers, 
+            pin_memory      = False, # getting out-of-memory sometimes if True
+            #persistent_workers = True,
+            worker_init_fn  = _worker_init_fn,
+            **kw
+        )
+    elif loader_type == 'threaded':
+        return ThreadedDataLoader(
+            dataset,
+            batch_size,
+            collate_fn,
+            num_workers,
+            shuffle
+        )
+
+def _worker_init_fn(x):
+    np.random.seed(torch.randint(0,1000,(1,))[0].item()+x)
 
 
 def load_image(
