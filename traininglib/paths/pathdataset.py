@@ -52,10 +52,13 @@ class PatchedPathsDataset(PatchedCachingDataset):
         cachedir: str,
     ) -> tp.List[str]:
         svg_items = []
+        scale = getattr(self, 'scale', 1.0)
         for i,grid in enumerate(grids):
             parsed = svg.parse_svg(svgfiles[i])
-            assert parsed.size == tuple(grid[-1][-2:][::-1]), \
-                f'Image and annotation have different sizes: {svgfiles[i]}'
+            # TODO: perform this check also when scale != 1.0
+            if scale == 1.0:
+                assert parsed.size == tuple(grid[-1][-2:][::-1]), \
+                    f'Image and annotation have different sizes: {svgfiles[i]}'
             if self.first_component_only:
                 # only using the first component (the main root)
                 components = [np.array(pathlist[0]) for pathlist in parsed.paths]
@@ -67,7 +70,7 @@ class PatchedPathsDataset(PatchedCachingDataset):
                             for path in pathlist
                 ]
             
-            if getattr(self, 'scale', 1.0) != 1.0:
+            if scale != 1.0:
                 components = [c * self.scale for c in components]
 
             for j,coords in enumerate(grid):

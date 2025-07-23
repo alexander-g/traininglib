@@ -158,15 +158,18 @@ class PatchedCachingDataset:
         patchsize: int|None, 
         scale:     float = 1.0,
         cachedir:  str = './cache/',
+        normalize_rgb:bool = False,
     ):
         '''Dataset for image pairs. If `patchsize` is given, 
            will extract and cache patches instead of loading full images'''
         self.filepairs = filepairs
         self.scale = scale
+        self.normalize_rgb = normalize_rgb
         if patchsize is not None:
             self.patchsize = patchsize
             filetuples = tp.cast(tp.List[FileTuple], filepairs)
-            self.filepairs, self.grids = self._cache(filetuples, cachedir=cachedir)
+            self.filepairs, self.grids = \
+                self._cache(filetuples, cachedir=cachedir, normalize_rgb=normalize_rgb)
     
     def __len__(self) -> int:
         return len(self.filepairs)
@@ -187,6 +190,7 @@ class PatchedCachingDataset:
         prefixes:   tp.List[str] = ['in', 'an'],
         cachedir:   str  = './cache/', 
         force:      bool = False,
+        normalize_rgb:bool = False,
     ):
         '''Slice data into patches and cache them into a folder.'''
 
@@ -212,6 +216,7 @@ class PatchedCachingDataset:
                 slack,
                 getattr(self, 'scale', 1.0),
                 'bilinear' if prefix == 'in' else 'nearest',
+                normalize_rgb=normalize_rgb,
             )
             lists_of_cached_files.append(cached_files_i)
 
@@ -266,7 +271,8 @@ def slice_and_cache_images(
     slack:      int,
     # scale factor to resize image before slicing (if not 1.0)
     scale:      float = 1.0,
-    mode:       tp.Literal['nearest', 'bilinear'] = 'nearest'
+    mode:       tp.Literal['nearest', 'bilinear'] = 'nearest',
+    normalize_rgb: bool = False,
 ) -> tp.Tuple[tp.List[str], tp.List[np.ndarray]]:
     os.makedirs(directory, exist_ok=True)
     cached_files:tp.List[str] = []
@@ -277,6 +283,10 @@ def slice_and_cache_images(
         basename  = os.path.basename(imagefile)
 
         imagedata = datalib.load_image(imagefile, to_tensor=True, normalize=False)
+        if normalize_rgb:
+            imagedata = imagedata.permute(1,2,0) # type: ignore
+            imagedata = normalize_image_from_patched_median_percentiles(imagedata)
+            imagedata = imagedata.permute(2,0,1)
         imagedata = tp.cast(torch.Tensor, imagedata)
         if scale != 1.0:
             H,W = imagedata.shape[-2:]
@@ -299,3 +309,29 @@ def slice_and_cache_images(
 
 
 
+
+def normalize_image_from_patched_median_percentiles(
+    image:torch.Tensor, 
+    patchsize:int = 512
+) -> torch.Tensor:
+    assert image.ndim == 3 and image.shape[2] == 3, image.shape
+    assert image.dtype == torch.uint8
+    image = image.float()
+
+    LOs = []
+    HIs = []
+    for i in range(0, image.shape[0], patchsize):
+        for j in range(0, image.shape[1], patchsize):
+            patch = image[i:i+patchsize]
+            lo = torch.quantile(patch, .01)
+            hi = torch.quantile(patch, .99)
+
+            LOs.append(lo)
+            HIs.append(hi)
+    
+    lower = torch.median(torch.tensor(LOs))
+    upper = torch.median(torch.tensor(HIs))
+
+    image = (image * 1.0 - lower) / upper * 255
+    image = torch.clip(image, 0, 255).to(torch.uint8)
+    return image    
