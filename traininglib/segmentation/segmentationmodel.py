@@ -317,12 +317,17 @@ def paste_patch(
     last_hslack0   = last_halfslack[0]
     last_hslack1   = last_halfslack[1]
 
-    crop_top    = torch.cat(
-        [torch.tensor([0]), halfslack.repeat(grid_h-2), last_hslack0.repeat(1)]
-    )
-    crop_left   = torch.cat(
-        [torch.tensor([0]), halfslack.repeat(grid_w-2), last_hslack1.repeat(1)]
-    )
+
+    crop_top = torch.cat([
+        torch.tensor([0]), 
+        halfslack.repeat( max(0, grid_h-2) ), 
+        last_hslack0.repeat( int(grid_h > 1) )
+    ])
+    crop_left = torch.cat([
+        torch.tensor([0]), 
+        halfslack.repeat( max(0, grid_w-2) ), 
+        last_hslack1.repeat( int(grid_w > 1) )
+    ])
     crop_bottom = torch.cat([-halfslack.repeat(grid_h-1), imageshape[-2][None]])
     crop_right  = torch.cat([-halfslack.repeat(grid_w-1), imageshape[-1][None]])
 

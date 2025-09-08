@@ -118,6 +118,27 @@ def test_torchscript_paste_patch():
     assert np.all( x.numpy() == y.numpy() )
 
 
+def test_ts_slice_paste_bug0():
+    scale = 1/3
+    h,w = int(1360*scale), int(1024*scale)
+    x = torch.rand([1, 3, h, w])
+    patchsize = 512
+    slack = 32
+
+    grid = segm.grid_for_patches(segm.image_size(x), patchsize, slack)
+    print(grid.shape)
+
+    full_output = torch.ones([1,3,h,w])
+    for i in range(len(grid.reshape(-1,4))):
+        patch = segm.get_patch_from_grid(x, grid, torch.tensor(i))
+        segm.paste_patch(full_output, patch, grid, torch.tensor(i), slack)
+    assert (x == full_output).all()
+
+
+    patches  = datalib.slice_into_patches_with_overlap(x, patchsize, slack)
+    stitched = datalib.stitch_overlapping_patches(patches, x.shape, slack=slack)
+    assert (x == stitched).all()
+
 
 def test_sample_tensor_at_coordinates():
     Z = torch.zeros([2,5,100,90])
