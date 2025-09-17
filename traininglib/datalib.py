@@ -110,6 +110,23 @@ def resize_tensor(
         y = y[0]
     return y
 
+# torchscriptable
+def resize_tensor2(
+    x:    torch.Tensor, 
+    size: tp.List[int], 
+    mode: str,
+    align_corners: tp.Optional[bool] = None,
+) -> torch.Tensor:
+    assert len(x.shape) in [3,4]
+
+    x0 = x
+    if len(x0.shape) == 3:
+        x = x[np.newaxis]
+    y = torch.nn.functional.interpolate(x, size, mode=mode, align_corners=align_corners)
+    if len(x0.shape) == 3:
+        y = y[0]
+    return y
+
 def to_device(*x:torch.Tensor, device:torch.device|str) -> tp.List[torch.Tensor]:
     return [xi.to(device) for xi in x]
 
