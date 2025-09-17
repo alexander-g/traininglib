@@ -2,10 +2,11 @@ import argparse
 import os
 import typing as tp
 
+import numpy as np
 import torch
 
 from . import util, datalib, modellib
-from .trainingtask import Callback, PrintMetricsCallback
+from .trainingtask import Callback, PrintMetricsCallback, TrainingProgressCallback
 
 
 Loss    = torch.Tensor
@@ -85,22 +86,35 @@ def train_one_step(
 def train(
     training_step:   torch.nn.Module,
     training_loader: tp.Sequence,
-    epochs: int,
+    epochs: tp.Optional[int],
+    steps:  tp.Optional[int] = None,
+    lr:     float = 1e-3,
     device: tp.Optional[torch.device] = None,
     checkpoint_dir: tp.Optional[str]  = None,
-    **opt_kw,
+    progress_callback: tp.Optional[tp.Callable[[float], None]] = None,
 ):
-    logfile = \
-        None if checkpoint_dir is None \
-            else os.path.join(checkpoint_dir, 'log.txt')
-    cb = PrintMetricsCallback(logfile)
+    assert epochs is not None or steps is not None, 'epochs or steps required'
+    assert epochs is None or steps is None, 'epochs or steps, not both'
+    if epochs is None:
+        steps  = tp.cast(int, steps)
+        epochs = np.ceil(steps / len(training_loader))
+        epochs = int(epochs)
+
+    cb:Callback
+    if progress_callback is not None:
+        cb = TrainingProgressCallback(progress_callback, epochs)
+    else:
+        logfile = \
+            None if checkpoint_dir is None \
+                else os.path.join(checkpoint_dir, 'log.txt')
+        cb = PrintMetricsCallback(logfile)
     
     if device is None:
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     training_step.to(device)
     
     optimizer, scheduler = \
-        create_optimizer(training_step, epochs, lr=1e-3, optimizer='adamw')
+        create_optimizer(training_step, epochs, lr=lr, optimizer='adamw')
     try:
         for e in range(epochs):
             train_one_epoch(training_step, training_loader, optimizer, scheduler, cb)
@@ -171,7 +185,7 @@ def start_training_from_cli_args(
         **ld_kw
     )
 
-    train(train_step, ld, args.epochs, checkpoint_dir=paths.checkpointdir)
+    train(train_step, ld, args.epochs, lr=args.lr, checkpoint_dir=paths.checkpointdir)
     
     train_step.save(paths.modelpath)
     if paths.modelpath_tmp is not None:
