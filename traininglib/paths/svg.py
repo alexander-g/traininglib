@@ -30,10 +30,13 @@ def parse_svg_path_d(d:str) -> Path:
         lines = segment_str.split('             ')
         for i, line in enumerate(lines):
             line = line.strip()
-            line = line.split('M')[0]
+            line = line.split('M')[0].strip()
             if len(line) == 0:
                 continue
             points_str = line.split(' ')
+            if points_str[0] in ['Z'] or points_str[-1] in ['Z']:
+                # Z: path closure, probably incorrectly annotated
+                continue
             if i == 0:
                 segment.append(
                     parse_point_str(points_str[0])
