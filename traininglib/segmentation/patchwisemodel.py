@@ -5,6 +5,7 @@ import pickle
 import typing as tp
 
 import numpy as np
+import PIL.Image
 import torch
 
 from ..modellib import BaseModel
@@ -194,15 +195,18 @@ class PatchedCachingDataset:
     ):
         '''Slice data into patches and cache them into a folder.'''
 
-        cachedir = self._get_concrete_cachedir(filepairs, cachedir)
+        self.cachedir = cachedir = self._get_concrete_cachedir(filepairs, cachedir)
         if not force:
             patch_pairs = load_if_cached(cachedir)
+            grids = load_grids_if_cached(cachedir)
             if patch_pairs is not None:
-                return patch_pairs, None
+                return patch_pairs, grids
         
         print('Caching dataset into', cachedir)
         os.makedirs(cachedir, exist_ok=True)
         open(os.path.join(cachedir, '.gitignore'), 'w').write('*')
+
+        assert_same_image_sizes(filepairs)
 
         lists_of_cached_files:tp.List[ tp.List[str] ] = []
         slack = max(self.patchsize // 8, 32)
@@ -219,7 +223,7 @@ class PatchedCachingDataset:
                 normalize_rgb=normalize_rgb,
             )
             lists_of_cached_files.append(cached_files_i)
-
+        assert_same_length(*lists_of_cached_files)
         all_patch_pairs:tp.List[tp.Tuple[str,str]] = \
             list(zip(*lists_of_cached_files))
         
@@ -227,6 +231,9 @@ class PatchedCachingDataset:
         datalib.save_file_tuples(cachefile, all_patch_pairs) # type: ignore
 
         # NOTE: assuming cached_coords are all the same
+        grids_picklefile = os.path.join(cachedir, 'grids.pkl')
+        pickle.dump(cached_grids_i, open(grids_picklefile, 'wb'))
+
         return all_patch_pairs, cached_grids_i
     
     def _get_concrete_cachedir(
@@ -255,6 +262,31 @@ def load_if_cached(
         return datalib.load_file_tuples(cachefile, n=n, delimiter=',')
     return None
 
+def load_grids_if_cached(
+    cachedir:str, 
+    filename:str = 'grids.pkl'
+) -> tp.Optional[tp.List[np.ndarray]]:
+    cachefile = os.path.join(cachedir, filename)
+    if os.path.exists(cachefile):
+        return pickle.load(open(cachefile, 'rb'))
+    return None
+
+def assert_same_length(*lists: tp.Sized) -> None:
+    ''' Assert all provided iterables have the same length'''
+    lengths: tp.List[int] = [len(lst) for lst in lists]
+    if not lengths:
+        return
+    first = lengths[0]
+    assert all(l == first for l in lengths), f"Lengths differ: {lengths}"
+
+def assert_same_image_sizes(filepairs:tp.List[FileTuple]) -> None:
+    '''Assert all images a file pair/tuple have the same width and height'''
+    for imtuple in filepairs:
+        sizes = [PIL.Image.open(imf).size for imf in imtuple]
+        if len(sizes) == 0:
+            continue
+        size0 = sizes[0]
+        assert all(s == size0 for s in sizes), imtuple
 
 class CachingResult:
     # all lists
