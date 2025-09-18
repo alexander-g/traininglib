@@ -108,6 +108,87 @@ def connected_components_indexed(x:torch.Tensor, start:int = 1) -> torch.Tensor:
 
 
 
+# @torch.jit.script_if_tracing
+# def connected_components_indexed(x:torch.Tensor, start:int = 1) -> torch.Tensor:
+#     '''Connected components algorithm'''
+#     assert x.dtype == torch.bool
+#     assert x.ndim == 2
+
+#     # pad borders
+#     x = x.to(torch.int64)
+#     x = torch.nn.functional.pad(x, [1, 1, 1, 1])
+
+#     # [N,2]
+#     indices = torch.argwhere(x)
+#     labels  = torch.arange(start, len(indices)+start, device=x.device)
+#     #labels  = labels[randperm(len(labels))]
+    
+#     x[indices[...,0], indices[...,1]] = labels
+
+#     # [9,2]
+#     offsets = torch.tensor([
+#         [ 0, 0],
+#         [-1, 0],
+#         [-1, 1],
+#         [ 0, 1],
+#         [ 1, 1],
+#         [ 1, 0],
+#         [ 1,-1],
+#         [ 0,-1],
+#         [-1,-1],
+#     ], device=x.device)
+#     # [N,9,2]
+#     offset_indices = indices[:,None,:] + offsets[None,:,:]
+
+#     prev_labels = x[indices[...,0], indices[...,1]]
+#     j = 0
+#     #import time
+#     _dbg_times = []
+#     _dbg_means = []
+#     while 1:
+#         #t0 = time.time()
+#         offset_labels = x[offset_indices[...,0], offset_indices[...,1]]
+#         new_labels = offset_labels.max(dim=1).values
+
+#         local_changes = (prev_labels != new_labels)
+#         #if j > 100:
+#         if local_changes.float().mean() < 0.00:
+#             locally_changed_labels = torch.cat([
+#                 prev_labels[local_changes], 
+#                 new_labels[local_changes],
+#             ])
+#             global_changes = torch.isin(new_labels, locally_changed_labels)
+
+#             if 766 not in torch.unique(new_labels[global_changes]) and x.shape[0] == 25:
+#                 breakpoint()
+
+#             new_labels = new_labels[global_changes]
+#             offset_indices = offset_indices[global_changes]
+#             indices = indices[global_changes]
+            
+
+#             if len(indices) == 0:
+#                 break
+#         else:
+#             if not torch.any(local_changes):
+#                 break
+#         x[indices[...,0], indices[...,1]] = new_labels
+#         prev_labels = new_labels
+
+#         #t1 = time.time()
+#         #_dbg_times.append(t1-t0)
+#         _dbg_means.append(local_changes.float().mean())
+#         j+=1
+#     print('J:', j)
+#     #print([ f'{t:.6f}' for t in _dbg_times ])
+#     #print([ f'{t:.2f}' for t in _dbg_means ])
+    
+#     # remove padding
+#     x = x[1:-1, 1:-1]
+#     return x
+
+
+
 @torch.jit.script_if_tracing
 def connected_components_transitive_closure(adjmat:torch.Tensor) -> torch.Tensor:
     '''Connected components on an adjacency matrix via mm multiplication'''
@@ -193,24 +274,57 @@ def connected_components_from_adjacency_list(adjlist:torch.Tensor) -> torch.Tens
     return dfs_on_adjacency_list(adjlist)['connectedcomponents']
 
 
+
 @torch.jit.script_if_tracing
 def _relabel(
     labelmap:         torch.Tensor, 
     adjacency_list:   torch.Tensor, 
-    adjacency_labels: torch.Tensor
+    adjacency_labels: torch.Tensor,
+    inplace: bool = False,
 ) -> torch.Tensor:
-    new_labelmap = labelmap.clone()
-    uniques      = torch.unique(adjacency_labels)
+    assert labelmap.ndim == 4
+    assert labelmap.shape[:2] == (1,1)
+    shape = labelmap.shape
+    labelmap = labelmap[0,0]
+    
+    coords  = torch.argwhere(labelmap != 0)
+    values  = labelmap[coords[:,0], coords[:,1]]
+    uniques = torch.unique(adjacency_labels)
+    relevant_mask = torch.isin(values, torch.unique(adjacency_list))
+    values  = values[relevant_mask]
+    coords  = coords[relevant_mask]
+
+    new_values = values.clone()
     for i in uniques:
         equivalent_labels = adjacency_list[(adjacency_labels == i)].reshape(-1)
-        # NOTE: torch.isin() is not exportable to onnx
-        mask = torch.isin(labelmap, equivalent_labels)
-        new_labelmap = torch.where(mask, i, new_labelmap)
-        #new_labelmap[mask] = i
-        # for l in equivalent_labels:
-        #     mask = (labelmap == l)
-        #     new_labelmap = torch.where(mask, i, new_labelmap)
-    return new_labelmap
+        mask = torch.isin(new_values, equivalent_labels)
+        new_values = torch.where(mask, i, new_values)
+    
+    
+    if not inplace:
+        labelmap = labelmap.clone()
+    labelmap[coords[:,0], coords[:,1]] = new_values
+    return labelmap.reshape(shape)
+
+
+# @torch.jit.script_if_tracing
+# def _relabel(
+#     labelmap:         torch.Tensor, 
+#     adjacency_list:   torch.Tensor, 
+#     adjacency_labels: torch.Tensor
+# ) -> torch.Tensor:
+#     new_labelmap = labelmap.clone()
+#     uniques      = torch.unique(adjacency_labels)
+#     for i in uniques:
+#         equivalent_labels = adjacency_list[(adjacency_labels == i)].reshape(-1)
+#         # NOTE: torch.isin() is not exportable to onnx
+#         mask = torch.isin(labelmap, equivalent_labels)
+#         new_labelmap = torch.where(mask, i, new_labelmap)
+#         #new_labelmap[mask] = i
+#         # for l in equivalent_labels:
+#         #     mask = (labelmap == l)
+#         #     new_labelmap = torch.where(mask, i, new_labelmap)
+#     return new_labelmap
 
 @torch.jit.script_if_tracing
 def _adjacency_at_borders(x:torch.Tensor, patchsize:int) -> torch.Tensor:
@@ -257,7 +371,7 @@ def connected_components_patchwise(x:torch.Tensor, patchsize:int) -> torch.Tenso
     ])
 
     adjacency_labels = connected_components_from_adjacency_list(adjacency_list)
-    return _relabel(y, adjacency_list, adjacency_labels)
+    return _relabel(y, adjacency_list, adjacency_labels, inplace=True)
 
 
 @torch.jit.script_if_tracing
