@@ -73,23 +73,24 @@ def connected_components_indexed(x:torch.Tensor, start:int = 1) -> torch.Tensor:
     x = torch.nn.functional.pad(x, [1, 1, 1, 1])
 
     # [N,2]
-    indices = torch.argwhere(x)
+    indices = torch.nonzero(x)
     labels  = torch.arange(start, len(indices)+start, device=x.device)
     
     x[indices[...,0], indices[...,1]] = labels
 
     # [9,2]
+    # NOTE: as flat list because of onnx
     offsets = torch.tensor([
-        [ 0, 0],
-        [-1, 0],
-        [-1, 1],
-        [ 0, 1],
-        [ 1, 1],
-        [ 1, 0],
-        [ 1,-1],
-        [ 0,-1],
-        [-1,-1],
-    ], device=x.device)
+         0, 0,
+        -1, 0,
+        -1, 1,
+         0, 1,
+         1, 1,
+         1, 0,
+         1,-1,
+         0,-1,
+        -1,-1,
+    ], device=x.device).reshape(9,2)
     # [N,9,2]
     offset_indices = indices[:,None,:] + offsets[None,:,:]
 

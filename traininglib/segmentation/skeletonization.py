@@ -92,23 +92,24 @@ def skeletonize_indexed(x:torch.Tensor) -> torch.Tensor:
     assert x.ndim == 2 and x.dtype == torch.bool
     x = torch.nn.functional.pad(x, (1,1, 1,1))
 
-    # [98,2]
+    # [8,2]
+    # NOTE: as flat list because of onnx
     offsets = torch.tensor([
         #[ 0, 0],
-        [-1, 0],  # P2
-        [-1, 1],  # P3
-        [ 0, 1],  # P4
-        [ 1, 1],  # P5
-        [ 1, 0],  # P6
-        [ 1,-1],  # P7
-        [ 0,-1],  # P8
-        [-1,-1],  # P9
-    ], device=x.device)
+        -1, 0,  # P2
+        -1, 1,  # P3
+         0, 1,  # P4
+         1, 1,  # P5
+         1, 0,  # P6
+         1,-1,  # P7
+         0,-1,  # P8
+        -1,-1,  # P9
+    ], device=x.device).reshape(8,2)
 
     condition = True
     while condition:
         # subiteration 1
-        indices = torch.argwhere(x)
+        indices = torch.nonzero(x)
         # [N,8,2]
         offset_indices = indices[:,None,:] + offsets[None,:,:]
         # [8,9]
@@ -121,7 +122,7 @@ def skeletonize_indexed(x:torch.Tensor) -> torch.Tensor:
 
 
         # subiteration 2
-        indices = torch.argwhere(x)
+        indices = torch.nonzero(x)
         # [N,8,2]
         offset_indices = indices[:,None,:] + offsets[None,:,:]
         # [N,8]
