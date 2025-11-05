@@ -51,6 +51,15 @@ def parse_size_from_viewbox(viewbox_str:str) -> Size:
     W,H = viewbox_str.split(' ')[-2:]
     return int(W), int(H)
 
+def parse_size_from_svg_string(svgstring:str) -> Size:
+    svgdom = minidom.parseString(svgstring)
+    svg_el = svgdom.getElementsByTagName('svg')
+    assert len(svg_el) == 1
+    size = parse_size_from_viewbox(
+        svg_el[0].getAttribute('viewBox')
+    )
+    return size
+
 def parse_svg_string(svgstring:str) -> ParsedSVG:
     svgdom   = minidom.parseString(svgstring)
     svg_el   = svgdom.getElementsByTagName('svg')

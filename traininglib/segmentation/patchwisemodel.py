@@ -12,6 +12,7 @@ from ..modellib import BaseModel
 from .. import datalib
 from ..datalib import random_crop, random_rotate_flip, FileTuple
 from ..trainingtask import TrainingTask, Loss, Metrics
+from ..paths.svg import parse_size_from_svg_string
 
 
 TensorPair = datalib.TensorPair
@@ -279,10 +280,17 @@ def assert_same_length(*lists: tp.Sized) -> None:
     first = lengths[0]
     assert all(l == first for l in lengths), f"Lengths differ: {lengths}"
 
+
+def get_image_size(path:str) -> tp.Tuple[int,int]:
+    if path.endswith('.svg'):
+        return parse_size_from_svg_string(open(path).read())
+    else:
+        return PIL.Image.open(path).size
+
 def assert_same_image_sizes(filepairs:tp.List[FileTuple]) -> None:
     '''Assert all images a file pair/tuple have the same width and height'''
     for imtuple in filepairs:
-        sizes = [PIL.Image.open(imf).size for imf in imtuple]
+        sizes = [get_image_size(imf) for imf in imtuple]
         if len(sizes) == 0:
             continue
         size0 = sizes[0]

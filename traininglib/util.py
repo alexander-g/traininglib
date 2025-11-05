@@ -48,7 +48,8 @@ def backup_code(destination:str) -> str:
         src_f = os.path.realpath(src_f)
         dst_f = os.path.join(destination, 'code', src_m + '.py')
         os.makedirs(os.path.dirname(dst_f), exist_ok=True)
-        shutil.copy(src_f, dst_f)
+        # NOTE: copyfile() instead of copy(), i.e. without metadata bc issues
+        shutil.copyfile(src_f, dst_f)
     open(os.path.join(destination, 'args.txt'), 'w').write(' '.join(sys.argv))
     return destination
 
