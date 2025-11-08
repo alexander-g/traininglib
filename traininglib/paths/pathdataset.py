@@ -23,6 +23,9 @@ class PatchedPathsDataset(PatchedCachingDataset):
         #inputfiles = [imf for imf,_ in filepairs]
         svgfiles   = [anf for _,anf in filepairs]
 
+        for imgf, svgf in filepairs:
+            image_svg_size_sanity_check(imgf, svgf)
+
         cached_filepairs, grids = \
             super()._cache(filepairs, prefixes=['in'], cachedir=cachedir, **kw)
         if grids is None:
@@ -55,10 +58,6 @@ class PatchedPathsDataset(PatchedCachingDataset):
         scale = getattr(self, 'scale', 1.0)
         for i,grid in enumerate(grids):
             parsed = svg.parse_svg(svgfiles[i])
-            # TODO: perform this check also when scale != 1.0
-            if scale == 1.0:
-                assert parsed.size == tuple(grid[-1][-2:][::-1]), \
-                    f'Image and annotation have different sizes: {svgfiles[i]}'
             if self.first_component_only:
                 # only using the first component (the main root)
                 components = [np.array(pathlist[0]) for pathlist in parsed.paths]
@@ -111,6 +110,15 @@ class PatchedPathsDataset(PatchedCachingDataset):
 
     def collate_fn(self, items:tp.List):
         return items
+
+
+def image_svg_size_sanity_check(imagefile:str, svgfile:str):
+    imgsize = PIL.Image.open(imagefile).size
+    svgfile = svg.parse_svg(svgfile).size
+    assert imgsize == svgfile, \
+        f'Image and annotation have different sizes: ' + \
+            f'{os.path.basename(imagefile)}({imgsize}), ' + \
+                f'{os.path.basename(svgfile)}({svgsize})'
 
 
 class FirstComponentPatchedPathsDataset(PatchedPathsDataset):
