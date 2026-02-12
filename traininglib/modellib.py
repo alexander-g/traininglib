@@ -18,11 +18,15 @@ class SaveableModule(torch.nn.Module):
                 destination += ".pt.zip"
         os.makedirs(os.path.dirname(destination) or ".", exist_ok=True)
 
+        importer:tp.Tuple
         try:
-            import torch_package_importer as imp
-
             # re-export
-            importer: tp.Any = (imp, torch.package.sys_importer)
+            if getattr(self, '_importer', None) is not None:
+                importer = (self._importer, torch.package.sys_importer)
+            else:
+                # in older torch versions this worked
+                import torch_package_importer as imp
+                importer = (imp, torch.package.sys_importer)
         except ImportError as e:
             # first export
             importer = (torch.package.sys_importer,)
@@ -41,7 +45,14 @@ class SaveableModule(torch.nn.Module):
             pe.intern("torchvision.**", exclude=externs)
             pe.extern(externs)
 
+            # _importer not pickle-able, remove temporarily
+            _importer = getattr(self, '_importer', None)
+            self._importer = None
+
             pe.save_pickle("model", "model.pkl", self.cpu().eval())
+
+            # re-attach _importer
+            self._importer = _importer
             # pe.save_text('model', 'class_list.txt', '\n'.join(self.class_list))
         return destination
 
@@ -183,7 +194,11 @@ def start_training_from_cli_args(
 def load_model(filename:str) -> BaseModel:
     '''Load a self-contained torch.package from file as saved with .save() above'''
     assert os.path.exists(filename), filename
-    return torch.package.PackageImporter(filename).load_pickle('model', 'model.pkl', map_location='cpu')
+    importer = torch.package.PackageImporter(filename)
+    model = importer.load_pickle('model', 'model.pkl', map_location='cpu')
+    # the importer is required during re-export since a newer pytorch version
+    model._importer = importer
+    return model
 
 def load_weights(filepath:str, model:torch.nn.Module) -> None:
     if filepath.endswith('.pt.zip'):
