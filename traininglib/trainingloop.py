@@ -15,10 +15,19 @@ LossAndMetrics = tp.Tuple[Loss, Metrics]
 
 
 
+class BaseTrainingAndValidationStep(modellib.SaveableModule):
+    def train_step(self) -> LossAndMetrics:
+        raise NotImplementedError
+    
+    def val_step(self) -> Metrics:
+        raise NotImplementedError
+
+
+
 
 
 def train_one_epoch(
-    training_step: torch.nn.Module,
+    training_step: tp.Union[torch.nn.Module, BaseTrainingAndValidationStep],
     loader:    tp.Sequence, 
     optimizer: torch.optim.Optimizer, 
     scheduler: tp.Optional[torch.optim.lr_scheduler.LRScheduler] = None, 
@@ -29,13 +38,17 @@ def train_one_epoch(
 
     n_batches = len(loader)
     loader_it = iter(loader)
+    has_train_step = hasattr(training_step, 'train_step')
 
     for i in range(n_batches):
         optimizer.zero_grad()
 
         batch = next(loader_it)
         with torch.autocast("cuda", enabled=amp):
-            loss, logs = training_step.train()(batch)
+            if has_train_step:
+                loss, logs = training_step.train().train_step(batch)
+            else:
+                loss, logs = training_step.train()(batch)
         logs["lr"] = optimizer.param_groups[0]["lr"]
 
         if scaler is not None:
@@ -53,44 +66,39 @@ def train_one_epoch(
         
     if scheduler is not None:
         scheduler.step()
+    
 
-
-def train_one_step(
-    training_step: torch.nn.Module,
-    load_iter: tp.Iterator, 
-    optimizer: torch.optim.Optimizer, 
-    scheduler: tp.Optional[torch.optim.lr_scheduler.LRScheduler] = None, 
-    callback:  tp.Optional[tp.Callable] = None,
-    scaler:    tp.Optional[torch.cuda.amp.GradScaler] = None, 
-    amp:       bool = False,
+def validate_one_epoch(
+    validation_step: BaseTrainingAndValidationStep,
+    loader:          tp.Sequence,
+    callback:        tp.Optional[Callback] = None,
 ) -> None:
-    optimizer.zero_grad()
+    n_batches = len(loader)
+    loader_it = iter(loader)
 
-    batch = next(load_iter)
-    with torch.autocast("cuda", enabled=amp):
-        loss, logs = training_step(batch)
-    logs["lr"] = optimizer.param_groups[0]["lr"]
 
-    if scaler is not None:
-        loss = scaler.scale(loss)
-    loss.backward()
-    if scaler is not None:
-        scaler.step(optimizer)
-        scaler.update()
+    for i in range(n_batches):
+        batch = next(loader_it)
+        with torch.no_grad():
+            logs = validation_step.eval().val_step(batch)
         
-    if scheduler is not None:
-        scheduler.step()
+        if callback is not None:
+            callback.on_batch_end(logs, i, n_batches)
+
+
+
 
 
 
 def train(
-    training_step:   torch.nn.Module,
-    training_loader: tp.Sequence,
-    epochs: tp.Optional[int],
-    steps:  tp.Optional[int] = None,
-    lr:     float = 1e-3,
-    device: tp.Optional[torch.device] = None,
-    checkpoint_dir: tp.Optional[str]  = None,
+    training_step:     tp.Union[torch.nn.Module, BaseTrainingAndValidationStep],
+    training_loader:   tp.Sequence,
+    epochs:            tp.Optional[int],
+    steps:             tp.Optional[int] = None,
+    validation_loader: tp.Optional[tp.Sequence] = None,
+    lr:                float = 1e-3,
+    device:            tp.Optional[torch.device] = None,
+    checkpoint_dir:    tp.Optional[str]  = None,
     progress_callback: tp.Optional[tp.Callable[[float], None]] = None,
 ):
     assert epochs is not None or steps is not None, 'epochs or steps required'
@@ -109,6 +117,8 @@ def train(
                 else os.path.join(checkpoint_dir, 'log.txt')
         cb = PrintMetricsCallback(logfile)
     
+    has_val_step = hasattr(training_step, 'val_step')
+    
     if device is None:
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     training_step.to(device)
@@ -118,6 +128,8 @@ def train(
     try:
         for e in range(epochs):
             train_one_epoch(training_step, training_loader, optimizer, scheduler, cb)
+            if has_val_step and validation_loader is not None:
+                validate_one_epoch(training_step, validation_loader, cb)
             cb.on_epoch_end(e)
     finally:
         training_step.zero_grad(set_to_none=True)
@@ -173,8 +185,9 @@ def create_optimizer(
 
 def start_training_from_cli_args(
     args:          argparse.Namespace,
-    train_step:    modellib.SaveableModule,
+    train_step:    tp.Union[modellib.SaveableModule, BaseTrainingAndValidationStep],
     train_dataset: tp.Iterable,
+    val_dataset:   tp.Optional[tp.Iterable] = None,
     ld_kw:         tp.Dict[str, tp.Any] = {},
 ):
     train_step, paths = util.prepare_for_training(train_step, args) # type: ignore
@@ -184,8 +197,16 @@ def start_training_from_cli_args(
         shuffle    = True,
         **ld_kw
     )
+    ld_val: tp.Optional[tp.Sequence] = None
+    if val_dataset is not None:
+        ld_val = datalib.create_dataloader( # type: ignore
+            val_dataset, 
+            batch_size = args.batchsize,
+            shuffle    = False,
+            **ld_kw
+        )
 
-    train(train_step, ld, args.epochs, lr=args.lr, checkpoint_dir=paths.checkpointdir)
+    train(train_step, ld, args.epochs, validation_loader = ld_val, lr=args.lr, checkpoint_dir=paths.checkpointdir)
     
     train_step.save(paths.modelpath)
     if paths.modelpath_tmp is not None:
