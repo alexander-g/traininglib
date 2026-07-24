@@ -248,6 +248,11 @@ class PatchedCachingDataset:
         cachedir = os.path.join(cachedir, hash)
         cachedir = os.path.abspath(cachedir)
         return cachedir
+    
+    def collate_fn(self, raw_batch:tp.List) -> tp.Tuple[torch.Tensor, torch.Tensor]:
+        x = torch.stack([xi for xi,_ in raw_batch])
+        t = torch.stack([ti for _,ti in raw_batch])
+        return x,t
 
 
 def load_if_cached(

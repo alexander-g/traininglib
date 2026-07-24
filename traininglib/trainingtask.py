@@ -131,6 +131,7 @@ class TrainingTask(torch.nn.Module):
         callback:       tp.Callable|None  = None,
         device:         str      = "cuda" if torch.cuda.is_available() else "cpu",
         amp:            bool     = False,
+        ld_kw:          tp.Dict[str, tp.Any] = {},
     ):
         """
         Training entry point.
@@ -155,7 +156,7 @@ class TrainingTask(torch.nn.Module):
                     else os.path.join(checkpoint_dir, 'log.txt')
             cb = PrintMetricsCallback(logfile)
         
-        ld_kw = {'batch_size':batch_size}
+        ld_kw = {'batch_size':batch_size} | ld_kw
         ld_train, ld_val = self.create_dataloaders(trainsplit, valsplit, **ld_kw)
         if ld_val is not None:
             #quick test to ensure validation_step() is actually implemented
