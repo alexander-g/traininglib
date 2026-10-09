@@ -45,6 +45,8 @@ class SaveableModule(torch.nn.Module):
             pe.intern("torchvision.**", exclude=externs)
             pe.extern(externs)
 
+            self.extra_exports(pe)
+
             # _importer not pickle-able, remove temporarily
             _importer = getattr(self, '_importer', None)
             self._importer = None
@@ -55,6 +57,10 @@ class SaveableModule(torch.nn.Module):
             self._importer = _importer
             # pe.save_text('model', 'class_list.txt', '\n'.join(self.class_list))
         return destination
+    
+    def extra_exports(self, pe:torch.package.PackageExporter):
+        # to be used by a subclass
+        pass
 
 
 class BaseModel(SaveableModule):
